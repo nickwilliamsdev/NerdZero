@@ -1,0 +1,59 @@
+# Prerequisites
+*.d
+*.sqlite3
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Virtual Environments
+venv/
+env/
+.env/
+.venv/
+env.bak/
+venv.bak/
+
+# PyTorch & Machine Learning
+*.pth
+*.pt
+*.ckpt
+*.weights
+models/saved_models/
+checkpoints/
+
+# Weights & Biases
+wandb/
+*.wandb
+
+# neat-python outputs (checkpoints and generated visuals)
+neat-checkpoint-*
+winner-*
+*.svg
+*.gv
+
+# Pytest & Coverage
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+coverage.xml
+
+# IDEs and Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
