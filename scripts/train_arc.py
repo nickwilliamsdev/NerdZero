@@ -1,0 +1,49 @@
+import os
+import sys
+
+# Ensure nerd_muzero modules can be imported
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
+import neat
+from nerd_muzero.envs.arc_wrapper import ARCWrapper
+from nerd_muzero.training.outer_loop_neat import evaluation_hook
+from nerd_muzero.tensorneat_pt.evolution import run_neat_evolution
+
+def run_experiment():
+    print("Starting NEAT-driven MuZero training loop...")
+    
+    local_dir = os.path.dirname(__file__)
+    config_path = os.path.abspath(os.path.join(local_dir, '../neat_config.txt'))
+    
+    # ARC data path (dummy placeholder for now, the wrapper handles missing data gracefully)
+    data_path = os.path.abspath(os.path.join(local_dir, '../data/arc_tasks'))
+    
+    # Load configuration
+    config = neat.Config(
+        neat.DefaultGenome, neat.DefaultReproduction,
+        neat.DefaultSpeciesSet, neat.DefaultStagnation,
+        config_path
+    )
+    
+    # Initialize the ARC environment
+    env = ARCWrapper(data_path=data_path, max_grid_size=(10, 10))
+    
+    # Initialize Population
+    p = neat.Population(config)
+    p.add_reporter(neat.StdOutReporter(True))
+    stats = neat.StatisticsReporter()
+    p.add_reporter(stats)
+    
+    # Create the closure for the evaluation hook mapping
+    def eval_genomes(genomes, config):
+        evaluation_hook(genomes, config, env)
+        
+    print(f"Beginning evolution across {config.pop_size} genomes per generation.")
+    # Run evolution
+    winner = p.run(eval_genomes, n=2)  # Limited to 2 generations for testing
+    
+    print("\nBest genome found:")
+    print(winner)
+
+if __name__ == '__main__':
+    run_experiment()
