@@ -5,3 +5,4 @@ pytest>=7.3.1
 wandb>=0.15.0
 neat-python>=0.92
 arckit @ git+https://github.com/mxbi/arckit.git
+gymnasium>=0.28.1
