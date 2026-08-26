@@ -14,7 +14,8 @@ def test_dynamics_network():
     dummy_state = torch.randn(batch_size, latent_dim)
     dummy_action = torch.randn(batch_size, action_dim)
     
-    next_state, reward = dynamics(dummy_state, dummy_action)
+    dummy_memory = torch.zeros(batch_size, 128, 128)
+    next_state, next_memory, reward = dynamics(dummy_state, dummy_memory, dummy_action)
     
     assert next_state.shape == (batch_size, latent_dim), \
         f"Expected next_state shape {(batch_size, latent_dim)}, got {next_state.shape}"

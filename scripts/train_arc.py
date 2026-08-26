@@ -44,6 +44,13 @@ def run_experiment():
     
     print("\nBest genome found:")
     print(winner)
+    
+    # Save the winner safely to be loaded by evaluate_agent.py
+    import pickle
+    winner_path = os.path.abspath(os.path.join(local_dir, "../best_genome.pkl"))
+    with open(winner_path, "wb") as f:
+        pickle.dump(winner, f)
+    print(f"Saved best genome to {winner_path}")
 
 if __name__ == '__main__':
     run_experiment()

@@ -26,6 +26,7 @@ class Node:
         self.value_sum = 0
         self.children = {}
         self.hidden_state = None
+        self.memory_state = None
         self.reward = 0
 
     def expanded(self) -> bool:
@@ -53,6 +54,8 @@ class MCTS:
         
         root = Node(0)
         root.hidden_state = initial_hidden_state
+        # Initialize fast weight S matrix mapped to DeltaNet dimensions
+        root.memory_state = torch.zeros(initial_hidden_state.shape[0], 128, 128, device=initial_hidden_state.device)
         root.to_play = to_play
         
         # Evaluate root
@@ -83,8 +86,9 @@ class MCTS:
             # (assuming flat action embedding or float equivalent here)
             action_tensor = torch.tensor([[last_action]], dtype=torch.float32, device=initial_hidden_state.device)
             
-            next_hidden_state, reward = self.dynamics_network(parent.hidden_state, action_tensor)
+            next_hidden_state, next_memory, reward = self.dynamics_network(parent.hidden_state, parent.memory_state, action_tensor)
             node.hidden_state = next_hidden_state
+            node.memory_state = next_memory
             node.reward = reward.item()
             
             policy_logits, value = self.prediction_network(next_hidden_state)
