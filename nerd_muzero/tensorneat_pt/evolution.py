@@ -57,7 +57,7 @@ def run_neat_evolution(config_file: str, env, generations: int = 100):
     stats = neat.StatisticsReporter()
     p.add_reporter(stats)
 
-    # Inject the ARCWrapper environment context into the evaluator
+    # Inject the ARCEnv environment context into the evaluator
     evaluator = lambda genomes, conf: evaluate_genomes(genomes, conf, env)
 
     winner = p.run(evaluator, generations)

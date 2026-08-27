@@ -113,7 +113,7 @@ class ARCEnv(gym.Env):
 
         # Apply action if within current grid bounds
         h, w = self.state.shape
-        if x < h and y < w:
+        if np.all(x < h) and np.all(y < w):
             self.state[x, y] = color
 
         # Match score after edit

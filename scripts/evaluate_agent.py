@@ -7,7 +7,7 @@ import neat
 # Ensure nerd_muzero modules can be imported
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from nerd_muzero.envs.arc_wrapper import ARCWrapper
+from nerd_muzero.envs.gym_env import ARCEnv
 from nerd_muzero.training.outer_loop_neat import build_models, get_substrate_coords
 from nerd_muzero.tensorneat_pt.cppn import build_cppn
 from nerd_muzero.training.inner_loop import MuZeroAgent
@@ -32,7 +32,7 @@ def evaluate_best_genome(genome_path, config_path, data_path):
         genome = pickle.load(f)
         
     # Initialize the ARC environment with rendering meant for human evaluation
-    env = ARCWrapper(data_path=data_path, max_grid_size=(10, 10), render_mode="human")
+    env = ARCEnv(max_steps=20)
     
     h, w = env.max_grid_size
     input_dim = h * w

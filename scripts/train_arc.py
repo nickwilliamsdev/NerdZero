@@ -5,7 +5,7 @@ import sys
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 import neat
-from nerd_muzero.envs.arc_wrapper import ARCWrapper
+from nerd_muzero.envs.gym_env import ARCEnv
 from nerd_muzero.training.outer_loop_neat import evaluation_hook
 from nerd_muzero.tensorneat_pt.evolution import run_neat_evolution
 
@@ -26,7 +26,7 @@ def run_experiment():
     )
     
     # Initialize the ARC environment
-    env = ARCWrapper(data_path=data_path, max_grid_size=(10, 10))
+    env = ARCEnv(max_steps=50)
     
     # Initialize Population
     p = neat.Population(config)

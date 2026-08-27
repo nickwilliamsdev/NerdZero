@@ -1,7 +1,7 @@
 import neat
 import torch
 
-from nerd_muzero.envs.arc_wrapper import ARCWrapper
+from nerd_muzero.envs.gym_env import ARCEnv
 from nerd_muzero.models.delta_net import DeltaNetEncoder
 from nerd_muzero.models.recursive import DynamicsNetwork
 from nerd_muzero.models.prediction import PredictionNetwork
