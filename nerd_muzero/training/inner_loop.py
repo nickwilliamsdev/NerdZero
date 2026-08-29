@@ -98,12 +98,70 @@ class MuZeroAgent:
             
         return history
 
-    def train_step(self, replay_buffer):
-        """
-        Placeholder for the PyTorch inner-loop BPTT (Backpropagation Through Time).
-        This unravels the dynamics model matching MCTS trajectories.
-        """
-        self.optimizer.zero_grad()
-        # To be implemented: Sample batch -> compute loss -> backward -> step
-        # loss = value_loss + policy_loss + reward_loss 
-        pass
+    def train_step(self, replay_buffer, batch_size=32, unroll_steps=5):
+            """
+            Executes one step of Backpropagation Through Time (BPTT) using unrolled MCTS targets.
+            """
+            # 1. Sample trajectory slices from the replay buffer
+            # Expected shapes: 
+            # obs_batch: (batch_size, obs_dim) -> Only need the root observation
+            # action_batch: (batch_size, unroll_steps)
+            # target_rewards, target_values: (batch_size, unroll_steps + 1)
+            # target_policies: (batch_size, unroll_steps + 1, num_actions)
+            batch = replay_buffer.sample(batch_size, unroll_steps)
+            obs_batch, action_batch, target_rewards, target_values, target_policies = batch
+            
+            # Ensure tensors are on the same device as the models
+            device = next(self.encoder.parameters()).device
+            
+            self.optimizer.zero_grad()
+            
+            # 2. Initial Step (k = 0): Encode root state and predict
+            latent_state = self.encoder(obs_batch)
+            policy_pred, value_pred = self.prediction(latent_state)
+            
+            # Step 0 losses (No reward loss at root)
+            # Note: Using MSE here for simplicity; replace with CrossEntropy if using MuZero's categorical support
+            value_loss = torch.nn.functional.mse_loss(value_pred.squeeze(-1), target_values[:, 0])
+            policy_loss = torch.sum(-target_policies[:, 0] * torch.nn.functional.log_softmax(policy_pred, dim=-1), dim=-1).mean()
+            reward_loss = torch.tensor(0.0, device=device)
+            
+            # 3. Unroll dynamics and accumulate losses (k = 1 to K)
+            for k in range(1, unroll_steps + 1):
+                action = action_batch[:, k - 1]
+                
+                # Forward latent dynamics
+                reward_pred, latent_state = self.dynamics(latent_state, action)
+                policy_pred, value_pred = self.prediction(latent_state)
+                
+                # MuZero Trick: Scale the gradient down by 0.5 at each latent step 
+                # to prevent the dynamics model gradients from exploding during unrolling.
+                latent_state.register_hook(lambda grad: grad * 0.5)
+                
+                # Accumulate step losses
+                value_loss += torch.nn.functional.mse_loss(value_pred.squeeze(-1), target_values[:, k])
+                reward_loss += torch.nn.functional.mse_loss(reward_pred.squeeze(-1), target_rewards[:, k])
+                policy_loss += torch.sum(-target_policies[:, k] * torch.nn.functional.log_softmax(policy_pred, dim=-1), dim=-1).mean()
+                
+            # Average losses over the unroll steps (excluding step 0 for reward)
+            total_loss = (value_loss + policy_loss + reward_loss) / unroll_steps
+            
+            # 4. Backpropagate and Optimize
+            total_loss.backward()
+            
+            # Clip gradients to prevent severe spikes from DeltaNet/Recursive updates
+            torch.nn.utils.clip_grad_norm_(
+                list(self.encoder.parameters()) + 
+                list(self.dynamics.parameters()) + 
+                list(self.prediction.parameters()), 
+                max_norm=1.0
+            )
+            
+            self.optimizer.step()
+            
+            return {
+                "loss": total_loss.item(),
+                "value_loss": value_loss.item() / unroll_steps,
+                "policy_loss": policy_loss.item() / unroll_steps,
+                "reward_loss": reward_loss.item() / unroll_steps
+            }
