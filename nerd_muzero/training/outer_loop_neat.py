@@ -79,8 +79,8 @@ def evaluation_hook(genomes, config, env):
         # 4. Instantiate inner agent and play an episode
         agent_config = {
             "lr": 1e-3, 
-            "num_simulations": 10,
-            "max_episode_steps": 10
+            "num_simulations": 50,  # Increase from 10 to 50
+            "max_episode_steps": 50  # Increase from 10 to 50
         }
         agent = MuZeroAgent(encoder, dynamics, prediction, env, agent_config)
         history = agent.play_episode(temperature=1.0)

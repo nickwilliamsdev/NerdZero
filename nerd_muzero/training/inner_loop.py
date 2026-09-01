@@ -19,7 +19,7 @@ class MuZeroAgent:
         params = list(encoder.parameters()) + list(dynamics.parameters()) + list(prediction.parameters())
         self.optimizer = optim.Adam(params, lr=config.get("lr", 1e-3))
         
-        self.mcts = MCTS(dynamics, prediction, num_simulations=config.get("num_simulations", 30))
+        self.mcts = MCTS(dynamics, prediction, num_simulations=config.get("num_simulations", 50))
         
     def act(self, obs, min_max_stats, temperature=1.0):
         # Flatten observation for embedding
@@ -63,7 +63,7 @@ class MuZeroAgent:
         }
         
         steps = 0
-        max_steps = self.config.get("max_episode_steps", 50)
+        max_steps = self.config.get("max_episode_steps", 100)
         
         while not done and steps < max_steps:
             # 1. Run MCTS to get policy and value
