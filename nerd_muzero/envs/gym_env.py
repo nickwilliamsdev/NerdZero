@@ -122,11 +122,14 @@ class ARCEnv(gym.Env):
         reward = (curr_phi - prev_phi) - 0.001  # tiny step cost
         done = False
 
-        if self.state.shape == self.target.shape and np.array_equal(self.state, self.target):
-            reward += 1.0
+        if np.array_equal(self.state, self.target):
+            reward = 10.0  # Strong positive reward for completion
             done = True
         elif self.current_step >= self.max_steps:
+            reward = -1.0  # Small penalty for timeout
             done = True
+        else:
+            reward = (curr_phi - prev_phi) * 10.0
 
         truncated = False
         info = {"task_id": getattr(self, "current_task_id", self.task_id)}
