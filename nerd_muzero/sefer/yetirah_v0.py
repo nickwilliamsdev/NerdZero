@@ -110,17 +110,16 @@ class CPPN(nn.Module):
     def __init__(self, coord_dim: int = 5, hidden: int = 32):
         super().__init__()
         in_dim = coord_dim * 4 + 1
+        out = nn.Linear(hidden, 2)
+        nn.init.normal_(out.weight, std=0.02)
+        nn.init.zeros_(out.bias)
         self.net = nn.Sequential(
             nn.Linear(in_dim, hidden),
             nn.Tanh(),
             nn.Linear(hidden, hidden),
             nn.Tanh(),
-            nn.Linear(hidden, 2),
+            out,
         )
-
-        # Keep the initial generated graph gentle.
-        nn.init.normal_(self.net[-1].weight, std=0.02)
-        nn.init.zeros_(self.net[-1].bias)
 
     def forward(self, coords: torch.Tensor) -> torch.Tensor:
         """
