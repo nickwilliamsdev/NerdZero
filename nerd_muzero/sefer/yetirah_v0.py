@@ -671,15 +671,15 @@ def train_smoke_test(
     batch_size: int = 32,
     inner_rollout_steps: int = 3,
     es_every: int = 50,
-    device: Optional[str] = None,
+    device: str = "cpu",
 ):
     seed_all(0)
 
     if device is None:
         device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    device = torch.device(device)
-    model = TinyReasoner().to(device)
+    torch_device = torch.device(device)
+    model = TinyReasoner().to(torch_device)
     tasks = SyntheticTaskBatch(dim=32)
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4, weight_decay=1e-4)
@@ -691,7 +691,7 @@ def train_smoke_test(
 
     for step in range(1, steps + 1):
         model.train()
-        x, y, _ = tasks.sample(batch_size, device)
+        x, y, _ = tasks.sample(batch_size, torch_device)
 
         H = differentiable_rollout(
             model,
@@ -706,7 +706,7 @@ def train_smoke_test(
         # Keep operator codes spread out to discourage collapse.
         codes = F.normalize(model.core.operator_codes, dim=-1)
         gram = codes @ codes.t()
-        eye = torch.eye(model.operator_count, device=device)
+        eye = torch.eye(model.operator_count, device=torch_device)
         diversity = ((gram - eye) ** 2).mean()
 
         # Encourage generated updates to remain small early on.
@@ -750,7 +750,7 @@ def train_smoke_test(
 
     # Verify discrete search runs.
     model.eval()
-    x, y, _ = tasks.sample(1, device)
+    x, y, _ = tasks.sample(1, torch_device)
     H0 = model.encode(x)
     action, probs = puct_search(
         model,
