@@ -175,6 +175,10 @@ class OperatorHyperNet(nn.Module):
     ):
         super().__init__()
         self.node_dim = node_dim
+        out = nn.Linear(hidden_dim, node_dim * 2 + 1)
+        nn.init.normal_(out.weight, std=0.02)
+        nn.init.zeros_(out.bias)
+
         self.net = nn.Sequential(
             nn.Linear(coord_dim + code_dim, hidden_dim),
             nn.Tanh(),
@@ -183,8 +187,6 @@ class OperatorHyperNet(nn.Module):
             nn.Linear(hidden_dim, node_dim * 2 + 1),
         )
 
-        nn.init.normal_(self.net[-1].weight, std=0.02)
-        nn.init.zeros_(self.net[-1].bias)
 
     def forward(
         self,
