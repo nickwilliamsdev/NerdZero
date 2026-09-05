@@ -184,7 +184,7 @@ class OperatorHyperNet(nn.Module):
             nn.Tanh(),
             nn.Linear(hidden_dim, hidden_dim),
             nn.Tanh(),
-            nn.Linear(hidden_dim, node_dim * 2 + 1),
+            out,
         )
 
 
@@ -336,7 +336,7 @@ class TinyReasoner(nn.Module):
 
         # Write an input vector into the geometric workspace.
         self.encoder = nn.Sequential(
-            nn.Linear(input_dim, n_nodes * node_dim),
+            nn.Linear(input_dim * 4, n_nodes * node_dim),
             nn.Tanh(),
         )
 
@@ -360,10 +360,27 @@ class TinyReasoner(nn.Module):
             nn.Linear(node_dim, input_dim),
         )
 
-    def encode(self, x: torch.Tensor) -> torch.Tensor:
-        b = x.shape[0]
-        n = torch.Tensor(self.core.coords).shape[0]
-        return self.encoder(x).view(b, n, self.node_dim)
+    def encode(
+        self,
+        demo_x: torch.Tensor,
+        demo_y: torch.Tensor,
+        query_x: torch.Tensor,
+    ) -> torch.Tensor:
+        b = query_x.shape[0]
+        n = self.core.coords.shape[0]
+
+        delta = demo_y - demo_x
+
+        context = torch.cat(
+            [demo_x, demo_y, delta, query_x],
+            dim=-1,
+        )
+
+        return self.encoder(context).view(
+            b,
+            n,
+            self.node_dim,
+        )
 
     def pool(self, H: torch.Tensor) -> torch.Tensor:
         # Learned query attention over the 32 substrate locations.
@@ -497,60 +514,118 @@ def puct_search(
 # ---------------------------------------------------------------------------
 
 class SyntheticTaskBatch:
-    """
-    Generates a simple family of vector transformations.
-
-    These are NOT meant as a benchmark. They only test that the machinery can
-    learn reusable transformations before we connect it to ARC.
-    """
-
     def __init__(self, dim: int = 32):
         self.dim = dim
 
-    def sample(self, batch_size: int, device):
-        x = torch.randn(batch_size, self.dim, device=device)
-
-        task_ids = torch.randint(0, 4, (batch_size,), device=device)
+    def apply_task(
+        self,
+        x: torch.Tensor,
+        task_ids: torch.Tensor,
+    ) -> torch.Tensor:
         y = torch.empty_like(x)
 
         for i, t in enumerate(task_ids.tolist()):
             if t == 0:
                 y[i] = torch.roll(x[i], shifts=1, dims=0)
+
             elif t == 1:
                 y[i] = -x[i]
+
             elif t == 2:
                 y[i] = x[i].flip(0)
-            else:
-                y[i] = 0.5 * x[i] + 0.5 * torch.roll(x[i], shifts=2, dims=0)
 
-        return x, y, task_ids
+            else:
+                y[i] = (
+                    0.5 * x[i]
+                    + 0.5 * torch.roll(x[i], shifts=2, dims=0)
+                )
+
+        return y
+
+    def sample(self, batch_size: int, device):
+        task_ids = torch.randint(
+            0,
+            4,
+            (batch_size,),
+            device=device,
+        )
+
+        demo_x = torch.randn(
+            batch_size,
+            self.dim,
+            device=device,
+        )
+
+        query_x = torch.randn(
+            batch_size,
+            self.dim,
+            device=device,
+        )
+
+        demo_y = self.apply_task(
+            demo_x,
+            task_ids,
+        )
+
+        query_y = self.apply_task(
+            query_x,
+            task_ids,
+        )
+
+        return (
+            demo_x,
+            demo_y,
+            query_x,
+            query_y,
+            task_ids,
+        )
 
 
 def differentiable_rollout(
     model: TinyReasoner,
-    x: torch.Tensor,
+    demo_x: torch.Tensor,
+    demo_y: torch.Tensor,
+    query_x: torch.Tensor,
     steps: int = 3,
     temperature: float = 1.0,
 ):
-    """
-    Soft operator mixture for differentiable pretraining.
+    H = model.encode(
+        demo_x,
+        demo_y,
+        query_x,
+    )
 
-    MCTS remains discrete at inference/search time. During initial training,
-    this soft mixture gives the operator policy and operator generator a dense
-    gradient signal.
-    """
-    H = model.encode(x)
     A = model.core.adjacency()
 
     for _ in range(steps):
         logits, _ = model.policy_value(H)
-        probs = torch.softmax(logits[:, :model.operator_count] / temperature, dim=-1)
+
+        probs = torch.softmax(
+            logits[:, :model.operator_count] / temperature,
+            dim=-1,
+        )
 
         all_next = []
+
         for k in range(model.operator_count):
-            all_next.append(model.core.apply_operator(H, k, A))
-        stack = torch.stack(all_next, dim=1)  # [B,K,N,D]
-        H = torch.einsum("bk,bknd->bnd", probs, stack)
+            all_next.append(
+                model.core.apply_operator(
+                    H,
+                    k,
+                    A,
+                )
+            )
+
+        stack = torch.stack(
+            all_next,
+            dim=1,
+        )
+
+        H = torch.einsum(
+            "bk,bknd->bnd",
+            probs,
+            stack,
+        )
 
     return H
 
@@ -596,17 +671,31 @@ def set_genotype_vector_(model: TinyReasoner, flat: torch.Tensor):
 
 
 @torch.no_grad()
-def evaluate_loss(
+def evaluate_fixed_batch(
     model: TinyReasoner,
-    task_source: SyntheticTaskBatch,
-    batch_size: int,
-    device,
+    demo_x: torch.Tensor,
+    demo_y: torch.Tensor,
+    query_x: torch.Tensor,
+    query_y: torch.Tensor,
     rollout_steps: int = 3,
 ) -> float:
-    x, y, _ = task_source.sample(batch_size, device)
-    H = differentiable_rollout(model, x, steps=rollout_steps)
+
+    H = differentiable_rollout(
+        model,
+        demo_x,
+        demo_y,
+        query_x,
+        steps=rollout_steps,
+    )
+
     pred = model.decode(H)
-    return float(F.mse_loss(pred, y).item())
+
+    return float(
+        F.mse_loss(
+            pred,
+            query_y,
+        ).item()
+    )
 
 
 @torch.no_grad()
@@ -627,6 +716,16 @@ def antithetic_es_step_(
     generated adjacency/output tensors.
     """
     base = get_genotype_vector(model)
+    (
+        demo_x,
+        demo_y,
+        query_x,
+        query_y,
+        _,
+    ) = task_source.sample(
+        eval_batch_size,
+        device,
+    )
     noises = []
     losses_plus = []
     losses_minus = []
@@ -638,11 +737,24 @@ def antithetic_es_step_(
         noises.append(eps)
 
         set_genotype_vector_(model, base + sigma * eps)
-        lp = evaluate_loss(model, task_source, eval_batch_size, device, rollout_steps)
-
+        lp = evaluate_fixed_batch(
+            model,
+            demo_x,
+            demo_y,
+            query_x,
+            query_y,
+            rollout_steps,
+        )
         set_genotype_vector_(model, base - sigma * eps)
-        lm = evaluate_loss(model, task_source, eval_batch_size, device, rollout_steps)
 
+        lm = evaluate_fixed_batch(
+            model,
+            demo_x,
+            demo_y,
+            query_x,
+            query_y,
+            rollout_steps,
+        )
         losses_plus.append(lp)
         losses_minus.append(lm)
 
@@ -674,7 +786,7 @@ def train_smoke_test(
     batch_size: int = 32,
     inner_rollout_steps: int = 3,
     es_every: int = 50,
-    device: str = "cpu",
+    device: str = "cuda" if torch.cuda.is_available() else "cpu",
 ):
     seed_all(0)
 
@@ -694,18 +806,50 @@ def train_smoke_test(
 
     for step in range(1, steps + 1):
         model.train()
-        x, y, _ = tasks.sample(batch_size, torch_device)
+        (
+            demo_x,
+            demo_y,
+            query_x,
+            query_y,
+            _,
+        ) = tasks.sample(
+            batch_size,
+            device,
+        )
 
         H = differentiable_rollout(
             model,
-            x,
+            demo_x,
+            demo_y,
+            query_x,
             steps=inner_rollout_steps,
-            temperature=max(0.4, 1.0 - step / max(steps, 1)),
+            temperature=max(
+                0.4,
+                1.0 - step / max(steps, 1),
+            ),
         )
         pred = model.decode(H)
 
-        recon = F.mse_loss(pred, y)
+        recon = F.mse_loss(
+            pred,
+            query_y,
+        )
+        per_sample_error = F.mse_loss(
+            pred,
+            query_y,
+            reduction="none",
+        ).mean(dim=-1)
 
+        value_target = torch.exp(
+            -per_sample_error.detach()
+        )
+
+        _, value = model.policy_value(H)
+
+        value_loss = F.mse_loss(
+            value,
+            value_target,
+        )
         # Keep operator codes spread out to discourage collapse.
         codes = F.normalize(model.core.operator_codes, dim=-1)
         gram = codes @ codes.t()
@@ -716,7 +860,12 @@ def train_smoke_test(
         A = model.core.adjacency()
         graph_reg = A.pow(2).mean()
 
-        loss = recon + 0.01 * diversity + 1e-4 * graph_reg
+        loss = (
+            recon
+            + 0.25 * value_loss
+            + 0.01 * diversity
+            + 1e-4 * graph_reg
+        )
 
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
@@ -742,6 +891,7 @@ def train_smoke_test(
                 f"step={step:04d} "
                 f"loss={loss.item():.5f} "
                 f"recon={recon.item():.5f} "
+                f"value={value_loss.item():.5f} "
                 f"div={diversity.item():.5f}"
             )
             if es_info:
@@ -753,8 +903,19 @@ def train_smoke_test(
 
     # Verify discrete search runs.
     model.eval()
-    x, y, _ = tasks.sample(1, torch_device)
-    H0 = model.encode(x)
+    (
+        demo_x,
+        demo_y,
+        query_x,
+        query_y,
+        _,
+    ) = tasks.sample(1, device)
+
+    H0 = model.encode(
+        demo_x,
+        demo_y,
+        query_x,
+    )
     action, probs = puct_search(
         model,
         H0,
