@@ -228,9 +228,13 @@ class YetirahCore(nn.Module):
         self.coord_dim = coord_dim
         self.node_dim = node_dim
         self.operator_count = operator_count
-
+        coords: torch.Tensor
         coords = make_hypercube_vertices(coord_dim)
-        self.register_buffer("coords", coords)
+        self.register_buffer(
+            "coords",
+            coords,
+            persistent=True,
+        )
 
         self.cppn = CPPN(coord_dim, cppn_hidden)
 
@@ -321,7 +325,6 @@ class TinyReasoner(nn.Module):
         self.node_dim = node_dim
         self.operator_count = operator_count
         self.num_actions = operator_count + 1
-
         self.core = YetirahCore(
             coord_dim=coord_dim,
             node_dim=node_dim,
@@ -359,7 +362,7 @@ class TinyReasoner(nn.Module):
 
     def encode(self, x: torch.Tensor) -> torch.Tensor:
         b = x.shape[0]
-        n = self.core.coords.shape[0]
+        n = torch.Tensor(self.core.coords).shape[0]
         return self.encoder(x).view(b, n, self.node_dim)
 
     def pool(self, H: torch.Tensor) -> torch.Tensor:
