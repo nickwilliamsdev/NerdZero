@@ -31,6 +31,8 @@ import os
 import pickle
 import tempfile
 import textwrap
+import sys
+from pathlib import Path
 from collections import Counter
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
@@ -56,24 +58,73 @@ NEAT_INPUT_NAMES = (
 NEAT_OUTPUT_NAMES = ["edge_logit"]
 
 
-def require_pytorch_neat():
-    """Load the real NEAT-Python + Uber PyTorch-NEAT stack.
+def _add_local_pytorch_neat_repo() -> Optional[Path]:
+    """Add a sibling PyTorch-NEAT checkout to sys.path when present.
 
-    We intentionally do not provide a fake fallback: this version is meant to
-    test actual topology/weight evolution of a CPPN genome.
+    Expected user layout::
+
+        <workspace>/
+            nerd_muzero/
+                sefer/
+                    yetirah_v0_neat_cppn_v21.py
+            PyTorch-NEAT/
+                pytorch_neat/
+
+    From this file that repository is ../../PyTorch-NEAT.  A few additional
+    candidates are checked so the script also works when launched/copied from
+    another working directory.
     """
+    script_dir = Path(__file__).resolve().parent
+    candidates = [
+        script_dir.parent.parent / "PyTorch-NEAT",
+        script_dir.parent / "PyTorch-NEAT",
+        Path.cwd() / "PyTorch-NEAT",
+        Path.cwd().parent / "PyTorch-NEAT",
+    ]
+
+    for repo in candidates:
+        repo = repo.resolve()
+        if (repo / "pytorch_neat" / "__init__.py").is_file():
+            repo_str = str(repo)
+            if repo_str not in sys.path:
+                sys.path.insert(0, repo_str)
+            return repo
+    return None
+
+
+def require_pytorch_neat():
+    """Load NEAT-Python plus a local Uber PyTorch-NEAT checkout.
+
+    PyTorch-NEAT does not need to be installed when its repository is a sibling
+    of nerd_muzero; we add that checkout directly to ``sys.path``.  NEAT-Python
+    itself is still a separate dependency because PyTorch-NEAT imports ``neat``.
+    """
+    local_repo = _add_local_pytorch_neat_repo()
+
     try:
         import neat  # type: ignore
-        from pytorch_neat.cppn import create_cppn  # type: ignore
     except Exception as exc:
         raise RuntimeError(
-            "v21 requires NEAT-Python and Uber PyTorch-NEAT. Install them before running:\n"
+            "v21 found/uses the local PyTorch-NEAT checkout, but NEAT-Python is "
+            "a separate dependency. Install it with:\n"
             "  pip install neat-python\n"
-            "  pip install --no-deps git+https://github.com/uber-research/PyTorch-NEAT.git\n"
-            "PyTorch-NEAT's repository pins very old dependencies; --no-deps lets it use "
-            "your existing modern PyTorch. If the latest neat-python is incompatible, "
-            "try neat-python==0.92 in a dedicated environment."
+            "If this old PyTorch-NEAT checkout requires the historical API, try:\n"
+            "  pip install neat-python==0.92"
         ) from exc
+
+    try:
+        from pytorch_neat.cppn import create_cppn  # type: ignore
+    except Exception as exc:
+        expected = (Path(__file__).resolve().parent.parent.parent / "PyTorch-NEAT").resolve()
+        raise RuntimeError(
+            "Could not import pytorch_neat. v21 expects a local checkout at:\n"
+            f"  {expected}\n"
+            "with a pytorch_neat/ package inside it. "
+            f"Detected local repo: {local_repo!s}"
+        ) from exc
+
+    print(f"PyTorch-NEAT source: {local_repo or 'Python environment'}")
+    print(f"NEAT-Python source: {getattr(neat, '__file__', '<unknown>')}")
     return neat, create_cppn
 
 
@@ -82,7 +133,7 @@ def neat_config_text(num_inputs: int, pop_size: int, seed: int = 0) -> str:
     return textwrap.dedent(f"""
     [NEAT]
     fitness_criterion = max
-    fitness_threshold = 7.95
+    fitness_threshold = 12.5
     pop_size = {pop_size}
     reset_on_extinction = False
     no_fitness_termination = False
@@ -146,9 +197,9 @@ def neat_config_text(num_inputs: int, pop_size: int, seed: int = 0) -> str:
     species_elitism = 2
 
     [DefaultReproduction]
-    elitism = 2
+    elitism = 4
     survival_threshold = 0.20
-    min_species_size = 2
+    min_species_size = 4
     """).strip() + "\n"
 
 
@@ -1549,7 +1600,7 @@ def _standalone_neat_edge_features(coords: torch.Tensor, code: torch.Tensor) -> 
     return feats
 
 
-def load_evolved_transport_cppn(model: TinyReasoner, winner_path: str = "yetirah_v21_neat_winner.pkl"):
+def load_evolved_transport_cppn(model: TinyReasoner, winner_path: str = "yetirah_v22_neat_winner.pkl"):
     """Reload an evolved NEAT winner and install its PyTorch-NEAT CPPN graph."""
     neat, create_cppn_fn = require_pytorch_neat()
     with open(winner_path, "rb") as f:
@@ -1574,8 +1625,9 @@ def load_evolved_transport_cppn(model: TinyReasoner, winner_path: str = "yetirah
     return genome, config
 
 
-def evolve_transport_cppn(model: TinyReasoner, generations: int = 50, pop_size: int = 96,
-                          seed: int = 0, save_path: str = "yetirah_v21_neat_winner.pkl"):
+def evolve_transport_cppn(model: TinyReasoner, generations: int = 100, pop_size: int = 256,
+                          seed: int = 0, save_path: str = "yetirah_v22_neat_winner.pkl",
+                          workers: int = 12):
     """Evolve one shared CPPN that generates all four anchored transport laws.
 
     Fitness rewards low transport CE, correct argmax permutation rows, low row
@@ -1601,25 +1653,92 @@ def evolve_transport_cppn(model: TinyReasoner, generations: int = 50, pop_size: 
     coords = model.core.coords.detach().cpu()
     codes = model.core.operator_codes.detach().cpu().clone()
 
-    best_seen = {"fitness": -1e30, "ce": None, "acc": None, "ent": None}
+    best_seen = {"fitness": -1e30, "ce": None, "acc": None, "ent": None, "c2": None, "c3": None}
+
+    def _transport_matrices(runtime):
+        mats = []
+        for pid in range(4):
+            logits = runtime.edge_logits(_standalone_neat_edge_features(coords, codes[pid]))
+            if logits.ndim > 2:
+                logits = logits.squeeze(-1)
+            mats.append(torch.softmax(logits, dim=-1))
+        return mats
+
+    def _target_perm(pid):
+        n = coords.shape[0]
+        src = primitive_transport_sources(pid, n, coords.device)
+        P = torch.zeros(n, n, dtype=coords.dtype)
+        P[torch.arange(n), src] = 1.0
+        return P
+
+    target_mats = [_target_perm(pid) for pid in range(4)]
+
+    def _compose(mats, seq):
+        out = torch.eye(coords.shape[0], dtype=coords.dtype)
+        for a in seq:
+            out = mats[a] @ out
+        return out
+
+    depth2 = [(a,b) for a in range(4) for b in range(4)]
+    depth3 = [(a,b,c) for a in range(4) for b in range(4) for c in range(4)]
+
+    def _composition_score(mats, seqs):
+        accs, ces = [], []
+        n = coords.shape[0]
+        rows = torch.arange(n)
+        for seq in seqs:
+            pred = _compose(mats, seq)
+            tgt = _compose(target_mats, seq)
+            src = tgt.argmax(dim=-1)
+            chosen = pred[rows, src].clamp_min(1e-8)
+            ces.append(-chosen.log().mean())
+            accs.append((pred.argmax(dim=-1) == src).float().mean())
+        return torch.stack(ces).mean(), torch.stack(accs).mean()
+
+    def score_one(item, neat_config):
+        gid, genome = item
+        try:
+            runtime = EvolvedTorchCPPN(genome, neat_config, create_cppn_fn)
+            with torch.no_grad():
+                ce, acc, ent = _neat_transport_metrics_from_runtime(runtime, coords, codes)
+                mats = _transport_matrices(runtime)
+                c2_ce, c2_acc = _composition_score(mats, depth2)
+                c3_ce, c3_acc = _composition_score(mats, depth3)
+            ce_v = float(ce.item())
+            acc_v = float(acc.mean().item())
+            ent_v = float(ent.mean().item())
+            c2_ce_v, c2_acc_v = float(c2_ce.item()), float(c2_acc.item())
+            c3_ce_v, c3_acc_v = float(c3_ce.item()), float(c3_acc.item())
+            complexity = len(genome.nodes) + len(genome.connections)
+            # Primitive fidelity remains dominant, but composition quality now
+            # determines whether a compact transport law is actually algebra-friendly.
+            fitness = (
+                4.0 * acc_v + 3.0 * math.exp(-ce_v)
+                + 2.0 * c2_acc_v + 1.5 * math.exp(-c2_ce_v)
+                + 1.0 * c3_acc_v + 0.75 * math.exp(-c3_ce_v)
+                - 0.05 * ent_v - 0.0005 * complexity
+            )
+            return gid, fitness, ce_v, acc_v, ent_v, c2_ce_v, c2_acc_v, c3_ce_v, c3_acc_v
+        except Exception:
+            return gid, -1e9, 99.0, 0.0, 1.0, 99.0, 0.0, 99.0, 0.0
 
     def eval_genomes(genomes, neat_config):
-        for _, genome in genomes:
-            try:
-                runtime = EvolvedTorchCPPN(genome, neat_config, create_cppn_fn)
-                with torch.no_grad():
-                    ce, acc, ent = _neat_transport_metrics_from_runtime(runtime, coords, codes)
-                ce_v = float(ce.item())
-                acc_v = float(acc.mean().item())
-                ent_v = float(ent.mean().item())
-                complexity = len(genome.nodes) + len(genome.connections)
-                # Perfect four-permutation transport approaches fitness ~8.
-                fitness = 4.0 * acc_v + 4.0 * math.exp(-ce_v) - 0.05 * ent_v - 0.0005 * complexity
-                genome.fitness = fitness
-                if fitness > best_seen["fitness"]:
-                    best_seen.update(fitness=fitness, ce=ce_v, acc=acc_v, ent=ent_v)
-            except Exception:
-                genome.fitness = -1e9
+        genomes = list(genomes)
+        # Threading is safe here because each genome gets its own immutable runtime;
+        # most tensor work releases the GIL. Keep workers modest on DGX Spark so
+        # NEAT bookkeeping does not oversubscribe the 20-core CPU.
+        if workers > 1:
+            from concurrent.futures import ThreadPoolExecutor
+            with ThreadPoolExecutor(max_workers=workers) as ex:
+                results = list(ex.map(lambda item: score_one(item, neat_config), genomes))
+        else:
+            results = [score_one(item, neat_config) for item in genomes]
+        by_id = {gid: genome for gid, genome in genomes}
+        for gid, fitness, ce_v, acc_v, ent_v, c2_ce_v, c2_acc_v, c3_ce_v, c3_acc_v in results:
+            genome = by_id[gid]
+            genome.fitness = fitness
+            if fitness > best_seen["fitness"]:
+                best_seen.update(fitness=fitness, ce=ce_v, acc=acc_v, ent=ent_v, c2=c2_acc_v, c3=c3_acc_v)
 
     pop = neat.Population(config)
     pop.add_reporter(neat.StdOutReporter(True))
@@ -1631,7 +1750,12 @@ def evolve_transport_cppn(model: TinyReasoner, generations: int = 50, pop_size: 
     with torch.no_grad():
         ce, acc, ent = _neat_transport_metrics_from_runtime(runtime, coords, codes)
     print("\nNEAT transport winner")
+    with torch.no_grad():
+        mats = _transport_matrices(runtime)
+        c2_ce, c2_acc = _composition_score(mats, depth2)
+        c3_ce, c3_acc = _composition_score(mats, depth3)
     print(f"  fitness={winner.fitness:.6f} CE={ce.item():.6f} meanAcc={acc.mean().item():.4f} meanH={ent.mean().item():.4f}")
+    print(f"  depth2Acc={c2_acc.item():.4f} depth2CE={c2_ce.item():.4f} depth3Acc={c3_acc.item():.4f} depth3CE={c3_ce.item():.4f}")
     for pid in range(4):
         print(f"  T{pid}Acc={acc[pid].item():.3f}/H={ent[pid].item():.3f}")
     print(f"  nodes={len(winner.nodes)} connections={len(winner.connections)}")
@@ -1928,8 +2052,9 @@ def train_smoke_test(
     mcts_simulations: int = 96,
     mcts_eval_simulations: int = 384,
     mcts_eval_batch: int = 16,
-    neat_generations: int = 50,
-    neat_population: int = 96,
+    neat_generations: int = 100,
+    neat_population: int = 256,
+    neat_workers: int = 12,
     neat_seed: int = 0,
     device: str = "cuda" if torch.cuda.is_available() else "cpu",
 ):
@@ -1942,7 +2067,7 @@ def train_smoke_test(
     # training. NEAT evaluation is kept on CPU for compatibility; the installed
     # PyTorch-NEAT CPPN evaluates torch tensors on whatever device they are given.
     print(f"evolving shared transport CPPN: generations={neat_generations} population={neat_population}")
-    evolve_transport_cppn(model, generations=neat_generations, pop_size=neat_population, seed=neat_seed)
+    evolve_transport_cppn(model, generations=neat_generations, pop_size=neat_population, seed=neat_seed, workers=neat_workers)
 
     optimizer = torch.optim.AdamW([p for p in model.parameters() if p.requires_grad], lr=3e-4, weight_decay=1e-4)
 
@@ -1950,8 +2075,8 @@ def train_smoke_test(
     print(f"params={sum(p.numel() for p in model.parameters()):,}")
     print(f"substrate_nodes={model.core.coords.shape[0]}")
     print(f"operators={model.operator_count} + STOP")
-    print(f"mode=v21 REAL PyTorch-NEAT evolved shared transport CPPN + functional-equivalence + transposition MuZero warmup({warmup_steps}) -> supervised transport algebra -> frozen-algebra variable-length (1..4) goal-conditioned program inference")
-    print(f"NEAT generations={neat_generations} population={neat_population} seed={neat_seed}")
+    print(f"mode=v22 DGX-scaled REAL PyTorch-NEAT evolved shared transport CPPN + composition-aware fitness + functional-equivalence + transposition MuZero warmup({warmup_steps}) -> supervised transport algebra -> frozen-algebra variable-length (1..4) goal-conditioned program inference")
+    print(f"NEAT generations={neat_generations} population={neat_population} workers={neat_workers} seed={neat_seed}")
     print(f"es_every={es_every} mcts_every={mcts_train_every} mcts_samples={mcts_train_samples} train_sims={mcts_simulations} eval_sims={mcts_eval_simulations}")
 
     for step in range(1, steps + 1):
@@ -2314,7 +2439,7 @@ def train_smoke_test(
         exact, mse, functional = vals
         print(f"  {name:20s} stringExact={exact:.3f} functional={functional:.3f} mctsMSE={mse:.5f}")
 
-    checkpoint_path = "yetirah_v21_posttrain.pt"
+    checkpoint_path = "yetirah_v22_posttrain.pt"
     torch.save({"model_state_dict": model.state_dict(), "optimizer_state_dict": optimizer.state_dict(), "steps": steps}, checkpoint_path)
     print(f"\nsaved checkpoint: {checkpoint_path}")
 
