@@ -26,10 +26,18 @@ def run_experiment():
     )
     
     # Initialize the ARC environment
-    env = ARCEnv(max_steps=100)
+    env = ARCEnv(max_steps=20)
     
     # Initialize Population
     p = neat.Population(config)
+
+    checkpointer = neat.Checkpointer(generation_interval=5, 
+                                    time_interval_seconds=None, 
+                                    filename_prefix='./checkpoints/neat-checkpoint-')
+
+    # 3. Add the checkpointer to the population reporters
+    p.add_reporter(checkpointer)
+
     p.add_reporter(neat.StdOutReporter(True))
     stats = neat.StatisticsReporter()
     p.add_reporter(stats)
@@ -40,7 +48,7 @@ def run_experiment():
         
     print(f"Beginning evolution across {config.pop_size} genomes per generation.")
     # Run evolution
-    winner = p.run(eval_genomes, n=500)  # Limited to 2 generations for testing
+    winner = p.run(eval_genomes, n=100)  # Limited to 2 generations for testing
     
     print("\nBest genome found:")
     print(winner)

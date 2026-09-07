@@ -18,6 +18,9 @@ env/
 env.bak/
 venv.bak/
 
+# neat population checkpoints
+checkpoints/
+
 # PyTorch & Machine Learning
 *.pth
 *.pt
