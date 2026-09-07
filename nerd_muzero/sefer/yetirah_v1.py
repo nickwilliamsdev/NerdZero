@@ -1,7 +1,7 @@
 """
 yetirah_v0.py
 
-Version 16 finite-horizon goal-conditioned MuZero-style program-search follow-up to the supervised transport algebra of a geometry-generated operator model inspired by the architecture
+Version 18 variable-length finite-horizon MuZero-style program-search follow-up to the supervised transport algebra of a geometry-generated operator model inspired by the architecture
 we discussed:
 
 5D hypercube substrate (32 vertices)
@@ -453,7 +453,7 @@ class TinyReasoner(nn.Module):
             nn.GELU(),
             nn.Linear(192, 96),
             nn.GELU(),
-            nn.Linear(96, operator_count),
+            nn.Linear(96, 5),  # four primitive operators + STOP
         )
 
         # MuZero-style goal value. Unlike the primitive value head, this is
@@ -524,7 +524,7 @@ class TinyReasoner(nn.Module):
                 device=current.device, dtype=current.dtype,
             )
         # Normalize by the synthetic proof's maximum program horizon.
-        horizon = horizon / 2.0
+        horizon = horizon / 4.0
         return torch.cat([current, target, delta, summed, product, rel, horizon], dim=-1)
 
     def program_policy(
@@ -594,14 +594,16 @@ class TinyReasoner(nn.Module):
 
 @dataclass
 class SearchConfig:
-    simulations: int = 64
-    max_depth: int = 2
+    simulations: int = 96
+    max_depth: int = 4
     c_puct: float = 1.5
     discount: float = 1.0
     terminal_beta: float = 2.0
-    action_limit: int = 4  # synthetic proof: search the four validated primitives
+    action_limit: int = 5  # four validated primitives + STOP
     prior_uniform_mix: float = 0.10
     force_unvisited: bool = True
+    use_transpositions: bool = True
+    transposition_decimals: int = 4
 
 
 class SearchNode:
@@ -658,8 +660,8 @@ def exact_horizon_value_target(
     """
     if remaining_steps <= 0:
         return terminal_goal_score(model, current_H, target_H, beta=beta)
-    candidates = []
-    for a in range(min(action_limit, model.operator_count)):
+    candidates = [terminal_goal_score(model, current_H, target_H, beta=beta)]  # STOP now
+    for a in range(min(4, model.operator_count)):
         next_H = model.transition(current_H, a)
         candidates.append(
             exact_horizon_value_target(
@@ -667,6 +669,17 @@ def exact_horizon_value_target(
             )
         )
     return torch.stack(candidates, dim=0).max(dim=0).values
+
+
+def latent_state_signature(state: torch.Tensor, remaining_steps: int, decimals: int = 4):
+    """Stable approximate key for deterministic synthetic search states.
+
+    The remaining horizon is part of the key because the same latent state has
+    different planning value with different numbers of actions left.
+    """
+    scale = float(10 ** decimals)
+    q = torch.round(state.detach().float().cpu() * scale).to(torch.int32).contiguous()
+    return (int(remaining_steps), q.numpy().tobytes())
 
 
 @torch.no_grad()
@@ -685,7 +698,7 @@ def goal_puct_search(
     """
     assert root_state.shape[0] == 1 and target_state.shape[0] == 1
     device = root_state.device
-    n_actions = min(cfg.action_limit, model.operator_count)
+    n_actions = cfg.action_limit
 
     root_logits, _ = model.program_policy_value(root_state, target_state, cfg.max_depth)
     root_prior = torch.softmax(root_logits[0, :n_actions], dim=-1)
@@ -693,6 +706,9 @@ def goal_puct_search(
         root_prior = (1.0 - cfg.prior_uniform_mix) * root_prior + cfg.prior_uniform_mix / n_actions
     root = SearchNode(root_state.clone(), root_prior, depth=0)
     root.init_actions(n_actions, device)
+    transpositions = {}
+    if cfg.use_transpositions:
+        transpositions[latent_state_signature(root.state, cfg.max_depth, cfg.transposition_decimals)] = root
 
     for _ in range(cfg.simulations):
         node = root
@@ -724,11 +740,27 @@ def goal_puct_search(
             else:
                 action = int(torch.argmax(q + u).item())
 
+            path.append((node, action))
+            # Action 4 is STOP: terminate immediately at the current state.
+            if action == 4:
+                value = float(terminal_goal_score(
+                    model, node.state, target_state, beta=cfg.terminal_beta
+                ).item())
+                break
             if action not in node.children:
                 next_state = model.transition(node.state, action)
-                node.children[action] = SearchNode(next_state.clone(), depth=node.depth + 1)
+                next_depth = node.depth + 1
+                child_remaining = max(cfg.max_depth - next_depth, 0)
+                if cfg.use_transpositions:
+                    key = latent_state_signature(next_state, child_remaining, cfg.transposition_decimals)
+                    child = transpositions.get(key)
+                    if child is None:
+                        child = SearchNode(next_state.clone(), depth=next_depth)
+                        transpositions[key] = child
+                    node.children[action] = child
+                else:
+                    node.children[action] = SearchNode(next_state.clone(), depth=next_depth)
             child = node.children[action]
-            path.append((node, action))
 
             child_remaining = max(cfg.max_depth - child.depth, 0)
             if child.visit is None:
@@ -764,11 +796,14 @@ def root_action_diagnostics(model, root_state, target_state, remaining_steps: in
     priors = torch.softmax(logits[0, :action_limit], dim=-1)
     rows = []
     for a in range(action_limit):
-        s1 = model.transition(root_state, a)
-        exact_v = exact_horizon_value_target(
-            model, s1, target_state, max(remaining_steps - 1, 0),
-            action_limit=action_limit, beta=2.0
-        )
+        if a == 4:
+            exact_v = terminal_goal_score(model, root_state, target_state, beta=2.0)
+        else:
+            s1 = model.transition(root_state, a)
+            exact_v = exact_horizon_value_target(
+                model, s1, target_state, max(remaining_steps - 1, 0),
+                action_limit=action_limit, beta=2.0
+            )
         rows.append((a, float(priors[a].item()), float(exact_v.item())))
     return rows
 
@@ -784,12 +819,17 @@ class SyntheticTaskBatch:
     """Primitive training tasks plus strictly held-out compositions."""
 
     TRAIN_NAMES = ("roll+1", "negate", "flip", "identity")
+    # Variable-length held-out programs (length 1..4). STOP is action 4 and
+    # is not part of the ground-truth primitive tuple.
     COMPOSITIONS = {
         "roll2": (0, 0),
-        "neg_after_roll": (0, 1),
         "flip_after_roll": (0, 2),
         "roll_after_flip": (2, 0),
-        "neg_after_flip": (2, 1),
+        "neg_roll_flip": (1, 0, 2),
+        "roll_flip_roll": (0, 2, 0),
+        "flip_roll_neg": (2, 0, 1),
+        "roll_roll_flip_neg": (0, 0, 2, 1),
+        "flip_roll_flip_roll": (2, 0, 2, 0),
     }
 
     def __init__(self, dim: int = 32):
@@ -848,27 +888,43 @@ class SyntheticTaskBatch:
         return support_x, support_y, probe_x, probe_y, query_x, query_y
 
     def program_training_sequences(self):
-        """Two-step programs used to train the controller in v13.
+        """Programs of length 1..4 excluding exact held-out tuples.
 
-        The five evaluation programs are excluded exactly. The controller sees
-        other combinations of the same primitive alphabet and must generalize
-        to the held-out ordered programs.
+        Identity primitive (3) is allowed inside programs. The separate STOP
+        action is used only by the controller to terminate before max depth.
         """
+        import itertools
         held_out = set(self.COMPOSITIONS.values())
-        return tuple((a, b) for a in range(4) for b in range(4) if (a, b) not in held_out)
+        seqs = []
+        for length in range(1, 5):
+            for seq in itertools.product(range(4), repeat=length):
+                if seq not in held_out:
+                    seqs.append(seq)
+        return tuple(seqs)
 
     def sample_program_batch(self, batch_size: int, device):
+        # Balance lengths explicitly. Uniform sampling over all tuples would make
+        # length-4 programs dominate (256 of 340 possible tuples), starving STOP.
         seqs = self.program_training_sequences()
-        which = torch.randint(0, len(seqs), (batch_size,), device=device)
-        program = torch.tensor([seqs[int(i)] for i in which.cpu().tolist()], device=device, dtype=torch.long)
+        by_len = {L: [seq for seq in seqs if len(seq) == L] for L in range(1, 5)}
+        sampled_lengths = torch.randint(1, 5, (batch_size,), device=device)
+        chosen = []
+        for L in sampled_lengths.cpu().tolist():
+            pool = by_len[int(L)]
+            idx = int(torch.randint(0, len(pool), (1,)).item())
+            chosen.append(pool[idx])
+        program = torch.full((batch_size, 4), 4, device=device, dtype=torch.long)
+        lengths = sampled_lengths.long()
         demo_x = torch.randn(batch_size, self.dim, device=device)
         query_x = torch.randn(batch_size, self.dim, device=device)
         demo_y = torch.empty_like(demo_x)
         query_y = torch.empty_like(query_x)
-        for i, seq in enumerate(program.tolist()):
-            demo_y[i:i+1] = self.apply_composition(demo_x[i:i+1], tuple(seq))
-            query_y[i:i+1] = self.apply_composition(query_x[i:i+1], tuple(seq))
-        return demo_x, demo_y, query_x, query_y, program
+        for i, seq in enumerate(chosen):
+            program[i, :len(seq)] = torch.tensor(seq, device=device, dtype=torch.long)
+            demo_y[i:i+1] = self.apply_composition(demo_x[i:i+1], seq)
+            query_y[i:i+1] = self.apply_composition(query_x[i:i+1], seq)
+        return demo_x, demo_y, query_x, query_y, program, lengths
+
 
 
 def differentiable_rollout(
@@ -920,6 +976,16 @@ def apply_selected_actions(model, H, actions, adjacency=None):
     )
     selector = F.one_hot(actions, num_classes=model.operator_count).to(H.dtype)
     return torch.einsum("bk,bknd->bnd", selector, all_next)
+
+
+@torch.no_grad()
+def apply_program_actions(model, H, actions, adjacency=None):
+    """Apply primitive actions 0..3; STOP(4) leaves state unchanged."""
+    out = H.clone()
+    active = actions < 4
+    if active.any():
+        out[active] = apply_selected_actions(model, H[active], actions[active], adjacency)
+    return out
 
 
 @torch.no_grad()
@@ -1304,8 +1370,7 @@ def freeze_for_program_phase(model: TinyReasoner):
 
 
 @torch.no_grad()
-def evaluate_greedy_program_accuracy(model, task_source, device, batch_size: int = 256):
-    """v14 held-out inference using only support-current -> support-goal feedback."""
+def evaluate_greedy_program_accuracy(model, task_source, device, batch_size: int = 256, max_depth: int = 4):
     model.eval()
     out = {}
     for name, seq in task_source.COMPOSITIONS.items():
@@ -1313,27 +1378,70 @@ def evaluate_greedy_program_accuracy(model, task_source, device, batch_size: int
         support = model.encode_query(demo_x)
         target_support = model.encode_query(demo_y)
         query = model.encode_query(query_x)
+        stopped = torch.zeros(batch_size, dtype=torch.bool, device=device)
         chosen_steps = []
-        for step_idx in range(2):
-            logits = model.program_policy(support, target_support, remaining_steps=2 - step_idx)
+        for step_idx in range(max_depth):
+            remaining = max_depth - step_idx
+            logits = model.program_policy(support, target_support, remaining_steps=remaining)[:, :5]
             action = logits.argmax(dim=-1)
+            action = torch.where(stopped, torch.full_like(action, 4), action)
             chosen_steps.append(action)
-            support = apply_selected_actions(model, support, action)
-            query = apply_selected_actions(model, query, action)
+            newly_stop = action == 4
+            support = apply_program_actions(model, support, action)
+            query = apply_program_actions(model, query, action)
+            stopped |= newly_stop
         chosen = torch.stack(chosen_steps, dim=1)
-        target = torch.tensor(seq, device=device, dtype=torch.long)[None, :].expand(batch_size, -1)
+        target = torch.full((batch_size, max_depth), 4, device=device, dtype=torch.long)
+        target[:, :len(seq)] = torch.tensor(seq, device=device, dtype=torch.long)
         exact = (chosen == target).all(dim=-1).float().mean()
-        pred = model.decode_query(query)
-        mse = F.mse_loss(pred, query_y)
-        out[name] = (float(exact.item()), float(mse.item()))
+        mse = F.mse_loss(model.decode_query(query), query_y)
+        functional, _ = functional_equivalence_rate(
+            model, model.encode_query(query_x), query_y, chosen, tuple(seq), tolerance=0.03
+        )
+        out[name] = (float(exact.item()), float(mse.item()), functional)
     return out
+
+
+def per_sample_output_mse(pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+    return F.mse_loss(pred, target, reduction="none").mean(dim=-1)
+
+
+@torch.no_grad()
+def functional_equivalence_rate(
+    model: TinyReasoner,
+    query0: torch.Tensor,
+    query_y: torch.Tensor,
+    chosen_actions: torch.Tensor,
+    reference_program: Tuple[int, ...],
+    tolerance: float = 0.03,
+) -> Tuple[float, float]:
+    """Score programs by behavior rather than literal action-string identity.
+
+    A chosen program is functionally equivalent when its query error is within
+    `tolerance` MSE of the known semantic program on the same sample. This is
+    intentionally tolerant of commuting/cancelling/shorter equivalent programs.
+    """
+    h_chosen = query0
+    stopped = torch.zeros(query0.shape[0], dtype=torch.bool, device=query0.device)
+    for t in range(chosen_actions.shape[1]):
+        a = chosen_actions[:, t]
+        effective = torch.where(stopped, torch.full_like(a, 4), a)
+        h_chosen = apply_program_actions(model, h_chosen, effective)
+        stopped |= effective == 4
+    pred = model.decode_query(h_chosen)
+    chosen_err = per_sample_output_mse(pred, query_y)
+
+    h_ref = apply_fixed_program(model, query0, tuple(reference_program))
+    ref_pred = model.decode_query(h_ref)
+    behavior_delta = per_sample_output_mse(pred, ref_pred)
+    equiv = behavior_delta <= tolerance
+    return float(equiv.float().mean().item()), float(chosen_err.mean().item())
 
 
 @torch.no_grad()
 def evaluate_muzero_program_search(
-    model, task_source, device, batch_size: int = 64, simulations: int = 64
+    model, task_source, device, batch_size: int = 32, simulations: int = 96, max_depth: int = 4
 ):
-    """Execute two sequential MCTS decisions from the support demonstration."""
     model.eval()
     out = {}
     for name, seq in task_source.COMPOSITIONS.items():
@@ -1341,32 +1449,149 @@ def evaluate_muzero_program_search(
         target_support = model.encode_query(demo_y)
         support = model.encode_query(demo_x)
         query = model.encode_query(query_x)
+        stopped = torch.zeros(batch_size, dtype=torch.bool, device=device)
         actions = []
-        for decision_idx in range(2):
-            remaining = 2 - decision_idx
-            cfg = SearchConfig(
-                simulations=simulations, max_depth=remaining, action_limit=4
-            )
+        for decision_idx in range(max_depth):
+            remaining = max_depth - decision_idx
             step_actions = []
             for b in range(batch_size):
+                if stopped[b]:
+                    step_actions.append(4)
+                    continue
                 a, _, _ = goal_puct_search(
-                    model, support[b:b+1], target_support[b:b+1], cfg
+                    model, support[b:b+1], target_support[b:b+1],
+                    SearchConfig(simulations=simulations, max_depth=remaining, action_limit=5)
                 )
                 step_actions.append(a)
             action = torch.tensor(step_actions, device=device, dtype=torch.long)
             actions.append(action)
-            support = apply_selected_actions(model, support, action)
-            query = apply_selected_actions(model, query, action)
+            support = apply_program_actions(model, support, action)
+            query = apply_program_actions(model, query, action)
+            stopped |= action == 4
         chosen = torch.stack(actions, dim=1)
-        target = torch.tensor(seq, device=device, dtype=torch.long)[None, :].expand(batch_size, -1)
+        target = torch.full((batch_size, max_depth), 4, device=device, dtype=torch.long)
+        target[:, :len(seq)] = torch.tensor(seq, device=device, dtype=torch.long)
         exact = (chosen == target).all(dim=-1).float().mean()
         mse = F.mse_loss(model.decode_query(query), query_y)
-        out[name] = (float(exact.item()), float(mse.item()))
+        functional, _ = functional_equivalence_rate(
+            model, model.encode_query(query_x), query_y, chosen, tuple(seq), tolerance=0.03
+        )
+        out[name] = (float(exact.item()), float(mse.item()), functional)
+    return out
+
+
+@torch.no_grad()
+def enumerate_primitive_programs(max_depth: int = 4):
+    """All primitive programs of length 0..max_depth; STOP is implicit at the end."""
+    import itertools
+    programs = [tuple()]
+    for length in range(1, max_depth + 1):
+        programs.extend(itertools.product(range(4), repeat=length))
+    return tuple(programs)
+
+
+@torch.no_grad()
+def apply_fixed_program(model: TinyReasoner, H: torch.Tensor, program: Tuple[int, ...]) -> torch.Tensor:
+    out = H
+    for action in program:
+        out = model.transition(out, int(action))
+    return out
+
+
+@torch.no_grad()
+def evaluate_exact_variable_program_search(
+    model, task_source, device, batch_size: int = 16, max_depth: int = 4
+):
+    """Exact support-selected oracle over the same primitive+STOP search space as PUCT.
+
+    Enumerates all sum_{d=0..D} 4^d programs. A program may stop at any depth
+    because every shorter tuple is represented explicitly. Selection uses only
+    support/demo error; the selected program is then transferred to the query.
+    """
+    model.eval()
+    programs = enumerate_primitive_programs(max_depth)
+    out = {}
+    for name, true_seq in task_source.COMPOSITIONS.items():
+        demo_x, demo_y, query_x, query_y = task_source.sample_composition(name, batch_size, device)
+        support0 = model.encode_query(demo_x)
+        target_support = model.encode_query(demo_y)
+        query0 = model.encode_query(query_x)
+
+        best_err = torch.full((batch_size,), float('inf'), device=device)
+        best_idx = torch.zeros(batch_size, dtype=torch.long, device=device)
+        for idx, program in enumerate(programs):
+            hs = apply_fixed_program(model, support0, program)
+            err = goal_error(model, hs, target_support)
+            better = err < best_err
+            best_err = torch.where(better, err, best_err)
+            best_idx = torch.where(better, torch.full_like(best_idx, idx), best_idx)
+
+        pred_q = torch.empty_like(query_x)
+        selected = []
+        for idx, program in enumerate(programs):
+            mask = best_idx == idx
+            if mask.any():
+                hq = apply_fixed_program(model, query0[mask], program)
+                pred_q[mask] = model.decode_query(hq)
+                selected.extend([program] * int(mask.sum().item()))
+        search_mse = F.mse_loss(pred_q, query_y)
+
+        oracle_h = apply_fixed_program(model, query0, tuple(true_seq))
+        oracle_mse = F.mse_loss(model.decode_query(oracle_h), query_y)
+        exact_string = torch.tensor(
+            [programs[int(i)] == tuple(true_seq) for i in best_idx.detach().cpu().tolist()],
+            device=device, dtype=torch.float32,
+        ).mean()
+        out[name] = {
+            'search_mse': float(search_mse.item()),
+            'oracle_mse': float(oracle_mse.item()),
+            'exact_string': float(exact_string.item()),
+            'mean_support_mse': float(best_err.mean().item()),
+        }
+    return out
+
+
+@torch.no_grad()
+def evaluate_root_search_diagnostics(
+    model, task_source, device, simulations: int = 384, samples_per_task: int = 8, max_depth: int = 4
+):
+    """Compare learned-prior and PUCT first actions to the exact Bellman-best root action."""
+    model.eval()
+    out = {}
+    for name in task_source.COMPOSITIONS:
+        demo_x, demo_y, _, _ = task_source.sample_composition(name, samples_per_task, device)
+        support = model.encode_query(demo_x)
+        target = model.encode_query(demo_y)
+        prior_hits = 0
+        puct_hits = 0
+        selected_value_ratio = []
+        for b in range(samples_per_task):
+            rows = root_action_diagnostics(
+                model, support[b:b+1], target[b:b+1], remaining_steps=max_depth, action_limit=5
+            )
+            priors = torch.tensor([r[1] for r in rows])
+            vals = torch.tensor([r[2] for r in rows])
+            vmax = float(vals.max().item())
+            # Functional equivalences can produce ties, so count any nearly-best action.
+            best = vals >= (vmax - 1e-5)
+            prior_a = int(priors.argmax().item())
+            prior_hits += int(bool(best[prior_a]))
+            puct_a, _, _ = goal_puct_search(
+                model, support[b:b+1], target[b:b+1],
+                SearchConfig(simulations=simulations, max_depth=max_depth, action_limit=5)
+            )
+            puct_hits += int(bool(best[puct_a]))
+            selected_value_ratio.append(float(vals[puct_a].item()) / max(vmax, 1e-8))
+        out[name] = {
+            'prior_best_rate': prior_hits / samples_per_task,
+            'puct_best_rate': puct_hits / samples_per_task,
+            'puct_value_ratio': sum(selected_value_ratio) / len(selected_value_ratio),
+        }
     return out
 
 
 def train_smoke_test(
-    steps: int = 1500,
+    steps: int = 2000,
     batch_size: int = 32,
     inner_rollout_steps: int = 1,
     warmup_steps: int = 250,
@@ -1375,7 +1600,8 @@ def train_smoke_test(
     diagnostic_every: int = 25,
     mcts_train_every: int = 5,
     mcts_train_samples: int = 4,
-    mcts_simulations: int = 64,
+    mcts_simulations: int = 96,
+    mcts_eval_simulations: int = 384,
     mcts_eval_batch: int = 16,
     device: str = "cuda" if torch.cuda.is_available() else "cpu",
 ):
@@ -1388,9 +1614,9 @@ def train_smoke_test(
     print(f"device={device}")
     print(f"params={sum(p.numel() for p in model.parameters()):,}")
     print(f"substrate_nodes={model.core.coords.shape[0]}")
-    print(f"operators={model.operator_count} + HALT")
-    print(f"mode=v17 warmup({warmup_steps}) -> supervised transport algebra -> frozen-algebra goal-conditioned program inference")
-    print(f"es_every={es_every} mcts_every={mcts_train_every} mcts_samples={mcts_train_samples} sims={mcts_simulations}")
+    print(f"operators={model.operator_count} + STOP")
+    print(f"mode=v20 functional-equivalence + transposition MuZero warmup({warmup_steps}) -> supervised transport algebra -> frozen-algebra variable-length (1..4) goal-conditioned program inference")
+    print(f"es_every={es_every} mcts_every={mcts_train_every} mcts_samples={mcts_train_samples} train_sims={mcts_simulations} eval_sims={mcts_eval_simulations}")
 
     for step in range(1, steps + 1):
         model.train()
@@ -1401,11 +1627,12 @@ def train_smoke_test(
             freeze_for_program_phase(model)
 
         if in_program_phase:
-            demo_x, demo_y, query_x, query_y, program_targets = tasks.sample_program_batch(batch_size, device)
+            demo_x, demo_y, query_x, query_y, program_targets, program_lengths = tasks.sample_program_batch(batch_size, device)
             task_ids = torch.zeros(batch_size, dtype=torch.long, device=device)
         else:
             demo_x, demo_y, query_x, query_y, task_ids = tasks.sample(batch_size, device)
             program_targets = None
+            program_lengths = None
         rule = model.encode_rule(demo_x, demo_y)
         H0 = model.encode_query(query_x)
 
@@ -1437,79 +1664,67 @@ def train_smoke_test(
         primitive_operator_targets = task_ids  # task 0..3 -> operator 0..3
         policy_logits_h0, _ = model.policy_value(H0, rule)
         if in_program_phase:
-            # v14 teacher forcing occurs in SUPPORT space. The controller sees
-            # current demo state and final demo target, chooses the next action,
-            # then observes the teacher-updated support state for step two.
             support_H0 = model.encode_query(demo_x)
             support_target = model.encode_query(demo_y)
-            prog_logits_1 = model.program_policy(support_H0, support_target, remaining_steps=2)
-            program_ce_1 = F.cross_entropy(prog_logits_1, program_targets[:, 0])
-            support_teacher_1 = apply_selected_actions(model, support_H0, program_targets[:, 0])
-            prog_logits_2 = model.program_policy(support_teacher_1, support_target, remaining_steps=1)
-            program_ce_2 = F.cross_entropy(prog_logits_2, program_targets[:, 1])
-            route_supervision_loss = 0.5 * (program_ce_1 + program_ce_2)
-            program_acc_1 = (prog_logits_1.argmax(dim=-1) == program_targets[:, 0]).float().mean()
-            program_acc_2 = (prog_logits_2.argmax(dim=-1) == program_targets[:, 1]).float().mean()
 
-            # v17 finite-horizon Bellman value training. The value network is
-            # trained on root/intermediate/off-policy states with the number of
-            # actions remaining, and targets the *best reachable terminal fit*
-            # rather than merely current-state closeness.
-            horizon_state_pairs = [(support_H0, 2), (support_teacher_1, 1)]
-            one_step_states = []
-            for a in range(4):
-                aa = torch.full((batch_size,), a, device=device, dtype=torch.long)
-                s1 = apply_selected_actions(model, support_H0, aa)
-                one_step_states.append(s1)
-                horizon_state_pairs.append((s1, 1))
-                horizon_state_pairs.append((s1, 0))
-            # Include all depth-2 leaves with h=0 so terminal calibration is
-            # learned on exactly the leaf distribution used by PUCT.
-            for s1 in one_step_states:
-                for b_action in range(4):
-                    bb = torch.full((batch_size,), b_action, device=device, dtype=torch.long)
-                    s2 = apply_selected_actions(model, s1, bb)
-                    horizon_state_pairs.append((s2, 0))
+            # Teacher forcing across a padded 4-step program. Targets after the
+            # true program length are STOP(4), so the controller learns both
+            # action identity and when to terminate.
+            support_teacher = support_H0
+            ce_terms, acc_terms, teacher_states = [], [], [support_H0]
+            for t in range(4):
+                remaining = 4 - t
+                logits_t = model.program_policy(support_teacher, support_target, remaining_steps=remaining)[:, :5]
+                target_t = program_targets[:, t]
+                ce_terms.append(F.cross_entropy(logits_t, target_t))
+                acc_terms.append((logits_t.argmax(dim=-1) == target_t).float().mean())
+                support_teacher = apply_program_actions(model, support_teacher, target_t)
+                teacher_states.append(support_teacher)
+            route_supervision_loss = torch.stack(ce_terms).mean()
+            program_ce_1, program_ce_2 = ce_terms[0], torch.stack(ce_terms[1:]).mean()
+            program_acc_1, program_acc_2 = acc_terms[0], torch.stack(acc_terms[1:]).mean()
 
+            # Exact finite-horizon Bellman supervision at root and teacher states.
             goal_value_losses = []
-            for vs, horizon in horizon_state_pairs:
+            for t, vs in enumerate(teacher_states[:-1]):
+                horizon = 4 - t
                 _, vv = model.program_policy_value(vs, support_target, horizon)
-                vt = exact_horizon_value_target(
-                    model, vs, support_target, horizon, action_limit=4, beta=2.0
-                )
+                vt = exact_horizon_value_target(model, vs, support_target, horizon, action_limit=5, beta=2.0)
+                goal_value_losses.append(F.mse_loss(vv, vt))
+            # Add random one-step off-policy states at horizons 0..3 without
+            # enumerating the entire 5^4 tree during every SGD batch.
+            for horizon in range(4):
+                aa = torch.randint(0, 4, (batch_size,), device=device)
+                vs = apply_selected_actions(model, support_H0, aa)
+                _, vv = model.program_policy_value(vs, support_target, horizon)
+                vt = exact_horizon_value_target(model, vs, support_target, horizon, action_limit=5, beta=2.0)
                 goal_value_losses.append(F.mse_loss(vv, vt))
             goal_value_loss = torch.stack(goal_value_losses).mean()
 
-            # MuZero policy improvement: periodically run PUCT on a few support
-            # states and distill normalized visit counts into the goal policy.
+            # MuZero policy improvement at root plus one randomly selected
+            # teacher-reached intermediate horizon.
             mcts_policy_loss = torch.zeros((), device=torch_device)
             mcts_root_entropy = torch.zeros((), device=torch_device)
             if mcts_train_every > 0 and step % mcts_train_every == 0:
-                cfg_root = SearchConfig(
-                    simulations=mcts_simulations, max_depth=2, action_limit=4
-                )
-                cfg_second = SearchConfig(
-                    simulations=mcts_simulations, max_depth=1, action_limit=4
-                )
                 n_mcts = min(mcts_train_samples, batch_size)
-                mcts_losses = []
-                mcts_entropies = []
+                mcts_losses, mcts_entropies = [], []
                 for b in range(n_mcts):
-                    # Root target.
                     _, visit0, _ = goal_puct_search(
-                        model, support_H0[b:b+1].detach(), support_target[b:b+1].detach(), cfg_root
+                        model, support_H0[b:b+1].detach(), support_target[b:b+1].detach(),
+                        SearchConfig(simulations=mcts_simulations, max_depth=4, action_limit=5)
                     )
-                    live0 = model.program_policy(support_H0[b:b+1], support_target[b:b+1], remaining_steps=2)[:, :4]
+                    live0 = model.program_policy(support_H0[b:b+1], support_target[b:b+1], remaining_steps=4)[:, :5]
                     mcts_losses.append(soft_policy_cross_entropy(live0, visit0[None, :]))
-                    mcts_entropies.append(
-                        -(visit0 * torch.log(visit0.clamp_min(1e-8))).sum() / math.log(4)
+                    mcts_entropies.append(-(visit0 * torch.log(visit0.clamp_min(1e-8))).sum() / math.log(5))
+                    t = 1 + (b % 3)
+                    rem = 4 - t
+                    state_t = teacher_states[t][b:b+1]
+                    _, visit_t, _ = goal_puct_search(
+                        model, state_t.detach(), support_target[b:b+1].detach(),
+                        SearchConfig(simulations=mcts_simulations, max_depth=rem, action_limit=5)
                     )
-                    # Teacher-reached second decision state.
-                    _, visit1, _ = goal_puct_search(
-                        model, support_teacher_1[b:b+1].detach(), support_target[b:b+1].detach(), cfg_second
-                    )
-                    live1 = model.program_policy(support_teacher_1[b:b+1], support_target[b:b+1], remaining_steps=1)[:, :4]
-                    mcts_losses.append(soft_policy_cross_entropy(live1, visit1[None, :]))
+                    live_t = model.program_policy(state_t, support_target[b:b+1], remaining_steps=rem)[:, :5]
+                    mcts_losses.append(soft_policy_cross_entropy(live_t, visit_t[None, :]))
                 if mcts_losses:
                     mcts_policy_loss = torch.stack(mcts_losses).mean()
                     mcts_root_entropy = torch.stack(mcts_entropies).mean()
@@ -1532,11 +1747,11 @@ def train_smoke_test(
                 # controller learns program identification; do not backprop into
                 # operator execution in this phase.
                 H = H0
-                H = apply_selected_actions(model, H, program_targets[:, 0])
-                H = apply_selected_actions(model, H, program_targets[:, 1])
+                for t in range(4):
+                    H = apply_program_actions(model, H, program_targets[:, t])
                 pred = model.decode_query(H)
                 recon = F.mse_loss(pred, query_y)
-                routing_stats = [torch.softmax(prog_logits_1, dim=-1), torch.softmax(prog_logits_2, dim=-1)]
+                routing_stats = []
             else:
                 progress = (step - warmup_steps) / max(algebra_steps - warmup_steps, 1)
                 temperature = max(0.30, 1.0 - 0.70 * progress)
@@ -1747,17 +1962,23 @@ def train_smoke_test(
 
     heldout_program = evaluate_greedy_program_accuracy(model, tasks, device, batch_size=256)
     print("\nHeld-out goal-conditioned program inference (exact programs never used in program-training phase)")
-    for name, (exact, mse) in heldout_program.items():
-        print(f"  {name:16s} exact={exact:.3f} greedyMSE={mse:.5f}")
+    for name, vals in heldout_program.items():
+        if len(vals) == 3:
+            exact, mse, functional = vals
+            print(f"  {name:20s} stringExact={exact:.3f} functional={functional:.3f} greedyMSE={mse:.5f}")
+        else:
+            exact, mse = vals
+            print(f"  {name:20s} stringExact={exact:.3f} greedyMSE={mse:.5f}")
 
     mcts_eval = evaluate_muzero_program_search(
-        model, tasks, device, batch_size=mcts_eval_batch, simulations=mcts_simulations
+        model, tasks, device, batch_size=mcts_eval_batch, simulations=mcts_eval_simulations
     )
-    print("\nHeld-out finite-horizon MuZero-style goal-conditioned PUCT (2 decisions)")
-    for name, (exact, mse) in mcts_eval.items():
-        print(f"  {name:16s} exact={exact:.3f} mctsMSE={mse:.5f}")
+    print("\nHeld-out variable-length MuZero-style PUCT (functional equivalence + transpositions)")
+    for name, vals in mcts_eval.items():
+        exact, mse, functional = vals
+        print(f"  {name:20s} stringExact={exact:.3f} functional={functional:.3f} mctsMSE={mse:.5f}")
 
-    checkpoint_path = "yetirah_v17_posttrain.pt"
+    checkpoint_path = "yetirah_v20_posttrain.pt"
     torch.save({"model_state_dict": model.state_dict(), "optimizer_state_dict": optimizer.state_dict(), "steps": steps}, checkpoint_path)
     print(f"\nsaved checkpoint: {checkpoint_path}")
 
@@ -1784,22 +2005,30 @@ def train_smoke_test(
         for pattern, count, frac in stats["sequences"][:3]:
             print(f"    {pattern}  n={count:3d} frac={frac:.3f}")
 
-    comp_eval = evaluate_compositional_generalization(model, tasks, device, batch_size=128)
-    print("\nZERO-SHOT factorized compositional generalization")
-    print("  greedy = OOD rule-conditioned policy | search = rule-blind exhaustive 2-step operator program search")
-    for name, stats in comp_eval.items():
+    exact_var = evaluate_exact_variable_program_search(
+        model, tasks, device, batch_size=mcts_eval_batch, max_depth=4
+    )
+    print("\nExact variable-length primitive+STOP oracle (support-selected, max depth 4)")
+    print("  same action space/horizon as PUCT; shorter equivalent programs are allowed")
+    for name, stats in exact_var.items():
         print(
-            f"  {name:16s} primitives={stats['primitive_sequence']} direct={stats['direct_mse']:.5f} "
-            f"greedy={stats['greedy_mse']:.5f} search={stats['search_mse']:.5f} "
-            f"oracle={stats['oracle_program_mse']:.5f}/{stats['oracle_program_nmse']:.4f} "
-            f"nmse={stats['search_nmse']:.4f} improve={stats['search_improvement']:+.5f} probe={stats['probe_mse']:.5f}"
+            f"  {name:20s} exactSearch={stats['search_mse']:.5f} "
+            f"knownProgram={stats['oracle_mse']:.5f} stringExact={stats['exact_string']:.3f} "
+            f"support={stats['mean_support_mse']:.5f}"
         )
-        print("    greedy sequences:")
-        for pattern, count, frac in stats["greedy_sequences"][:3]:
-            print(f"      {pattern}  n={count:3d} frac={frac:.3f}")
-        print("    searched sequences:")
-        for pattern, count, frac in stats["search_sequences"][:3]:
-            print(f"      {pattern}  n={count:3d} frac={frac:.3f}")
+
+    root_diag = evaluate_root_search_diagnostics(
+        model, tasks, device, simulations=mcts_eval_simulations, samples_per_task=8, max_depth=4
+    )
+    print("\nHeld-out root planning diagnostics")
+    print("  priorBest = learned prior already picks an exact Bellman-best first action")
+    print("  puctBest  = PUCT picks an exact Bellman-best first action")
+    print("  valueRatio = exact continuation value of PUCT choice / optimum")
+    for name, stats in root_diag.items():
+        print(
+            f"  {name:20s} priorBest={stats['prior_best_rate']:.3f} "
+            f"puctBest={stats['puct_best_rate']:.3f} valueRatio={stats['puct_value_ratio']:.3f}"
+        )
 
     # Goal-conditioned PUCT diagnostic on a held-out composition.
     model.eval()
@@ -1807,16 +2036,16 @@ def train_smoke_test(
     support = model.encode_query(demo_x)
     target_support = model.encode_query(demo_y)
     action, probs, root_err = goal_puct_search(
-        model, support, target_support, SearchConfig(simulations=mcts_simulations)
+        model, support, target_support, SearchConfig(simulations=mcts_eval_simulations, max_depth=4, action_limit=5)
     )
-    print("\nFinite-horizon MuZero/PUCT smoke test (roll2)")
+    print("\nVariable-length MuZero/PUCT smoke test (roll2, max depth 4, transpositions on)")
     print("root support-goal error:", root_err)
     print("chosen action:", action)
     top = torch.topk(probs, k=min(4, probs.numel()))
     print("top policy visits:", top.indices.tolist())
     print("top visit probs:", top.values.tolist())
     print("root action prior / exact best continuation value:")
-    for a, prior, exact_v in root_action_diagnostics(model, support, target_support, remaining_steps=2):
+    for a, prior, exact_v in root_action_diagnostics(model, support, target_support, remaining_steps=4, action_limit=5):
         print(f"  a={a} prior={prior:.4f} exactV={exact_v:.4f}")
 
     return model
