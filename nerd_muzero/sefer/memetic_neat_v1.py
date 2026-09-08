@@ -2273,7 +2273,7 @@ def train_smoke_test(
     mcts_eval_simulations: int = 384,
     mcts_eval_batch: int = 16,
     neat_generations: int = 100,
-    neat_population: int = 256,
+    neat_population: int = 96,
     neat_workers: int = 12,
     neat_inner_steps: int = 32,
     neat_inner_lr: float = 1e-2,
