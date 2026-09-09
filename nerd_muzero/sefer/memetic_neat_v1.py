@@ -168,7 +168,7 @@ def neat_config_text(num_inputs: int, pop_size: int, seed: int = 0) -> str:
     initial_connection = full_direct
     node_add_prob = 0.20
     node_delete_prob = 0.05
-    num_hidden = 4
+    num_hidden = 22
     num_inputs = {num_inputs}
     num_outputs = 1
     response_init_mean = 1.0
@@ -191,7 +191,7 @@ def neat_config_text(num_inputs: int, pop_size: int, seed: int = 0) -> str:
     structural_mutation_surer = default
 
     [DefaultSpeciesSet]
-    compatibility_threshold = 6.0
+    compatibility_threshold = 4.5
 
     [DefaultStagnation]
     species_fitness_func = max
@@ -1753,7 +1753,7 @@ def _standalone_neat_edge_features(coords: torch.Tensor, code: torch.Tensor) -> 
     return feats
 
 
-def load_evolved_transport_cppn(model: TinyReasoner, winner_path: str = "yetirah_v24_neat_winner.pkl"):
+def load_evolved_transport_cppn(model: TinyReasoner, winner_path: str = "yetirah_v25_neat_winner.pkl"):
     """Reload an evolved NEAT winner and install its PyTorch-NEAT CPPN graph."""
     neat, create_cppn_fn = require_pytorch_neat()
     with open(winner_path, "rb") as f:
@@ -1778,9 +1778,9 @@ def load_evolved_transport_cppn(model: TinyReasoner, winner_path: str = "yetirah
     return genome, config
 
 
-def evolve_transport_cppn(model: TinyReasoner, generations: int = 100, pop_size: int = 256,
-                          seed: int = 0, save_path: str = "yetirah_v24_neat_winner.pkl",
-                          workers: int = 12, inner_steps: int = 32, inner_lr: float = 1e-2):
+def evolve_transport_cppn(model: TinyReasoner, generations: int = 100, pop_size: int = 32,
+                          seed: int = 0, save_path: str = "yetirah_v25_neat_winner.pkl",
+                          workers: int = 12, inner_steps: int = 10, inner_lr: float = 1e-2):
     """Evolve one shared CPPN that generates all four anchored transport laws.
 
     Fitness rewards low transport CE, correct argmax permutation rows, low row
@@ -1864,14 +1864,24 @@ def evolve_transport_cppn(model: TinyReasoner, generations: int = 100, pop_size:
             chosen = P[rows, src].clamp_min(1e-8)
             primitive_ces.append(-chosen.log().mean())
             target_probs.append(chosen.mean())
-        pce = torch.stack(primitive_ces).mean()
-        # Smooth weakest-primitive pressure; unlike argmax accuracy this gives gradients.
+        primitive_ces_t = torch.stack(primitive_ces)
         probs = torch.stack(target_probs)
-        tau = 0.10
+
+        # Adaptive balancing: weak primitives receive more of the gradient budget.
+        # Detaching the weights prevents the weighting rule itself from becoming
+        # another optimization path; gradients still flow through each CE term.
+        inv = 1.0 / probs.detach().clamp_min(0.02)
+        weights = inv / inv.mean()
+        pce = (weights * primitive_ces_t).mean()
+
+        # Strong smooth bottleneck pressure. This approximates max-loss/min-quality
+        # without the discontinuity of argmax accuracy, so the inner loop directly
+        # attacks whichever primitive is currently weakest.
+        tau = 0.08
         soft_min_prob = -tau * torch.logsumexp(-probs / tau, dim=0)
         c2 = _diff_composition_ce(mats, depth2)
         c3 = _diff_composition_ce(mats, depth3)
-        return pce + 0.35 * c2 + 0.15 * c3 + 0.50 * (1.0 - soft_min_prob)
+        return pce + 0.35 * c2 + 0.15 * c3 + 2.00 * (1.0 - soft_min_prob)
 
     def _composition_score(mats, seqs):
         accs, ces = [], []
@@ -1922,14 +1932,16 @@ def evolve_transport_cppn(model: TinyReasoner, generations: int = 100, pop_size:
             c3_ce_v, c3_acc_v = float(c3_ce.item()), float(c3_acc.item())
             complexity = len(genome.nodes) + len(genome.connections)
             min_acc_v = float(acc.min().item())
+            acc_spread_v = float((acc.max() - acc.min()).item())
             learnability = max(-1.0, min(1.0, (loss0 - lossT) / (abs(loss0) + 1e-8)))
             auc_quality = sum(qualities) / max(1, len(qualities))
             fitness = (
-                3.0 * acc_v + 3.0 * min_acc_v + 3.0 * math.exp(-ce_v)
+                3.0 * acc_v + 6.0 * min_acc_v + 3.0 * math.exp(-ce_v)
                 + 2.0 * c2_acc_v + 1.5 * math.exp(-c2_ce_v)
                 + 1.0 * c3_acc_v + 0.75 * math.exp(-c3_ce_v)
                 + 1.25 * math.exp(-lossT)
                 + 0.75 * learnability + 0.50 * auc_quality
+                - 0.25 * acc_spread_v
                 - 0.05 * ent_v - 0.0005 * complexity
             )
             return (gid, fitness, ce_v, acc_v, ent_v, c2_ce_v, c2_acc_v,
@@ -2262,7 +2274,7 @@ def evaluate_root_search_diagnostics(
 def train_smoke_test(
     steps: int = 2000,
     batch_size: int = 32,
-    inner_rollout_steps: int = 1,
+    inner_rollout_steps: int = 10,
     warmup_steps: int = 250,
     algebra_steps: int = 1000,
     es_every: int = 0,
@@ -2273,7 +2285,7 @@ def train_smoke_test(
     mcts_eval_simulations: int = 384,
     mcts_eval_batch: int = 16,
     neat_generations: int = 100,
-    neat_population: int = 96,
+    neat_population: int = 256,
     neat_workers: int = 12,
     neat_inner_steps: int = 32,
     neat_inner_lr: float = 1e-2,
@@ -2297,7 +2309,7 @@ def train_smoke_test(
     print(f"params={sum(p.numel() for p in model.parameters()):,}")
     print(f"substrate_nodes={model.core.coords.shape[0]}")
     print(f"operators={model.operator_count} + STOP")
-    print(f"mode=v24 memetic/Lamarckian geometry-enriched PyTorch-NEAT + inner-loop backprop + learnability/bottleneck/composition fitness + functional-equivalence + transposition MuZero warmup({warmup_steps}) -> supervised transport algebra -> frozen-algebra variable-length (1..4) goal-conditioned program inference")
+    print(f"mode=v25 balanced memetic/Lamarckian geometry-enriched PyTorch-NEAT + adaptive weakest-operator backprop + strong bottleneck/composition fitness + functional-equivalence + transposition MuZero warmup({warmup_steps}) -> supervised transport algebra -> frozen-algebra variable-length (1..4) goal-conditioned program inference")
     print(f"NEAT generations={neat_generations} population={neat_population} workers={neat_workers} innerSteps={neat_inner_steps} innerLR={neat_inner_lr:g} seed={neat_seed}")
     print(f"es_every={es_every} mcts_every={mcts_train_every} mcts_samples={mcts_train_samples} train_sims={mcts_simulations} eval_sims={mcts_eval_simulations}")
 
@@ -2661,7 +2673,7 @@ def train_smoke_test(
         exact, mse, functional = vals
         print(f"  {name:20s} stringExact={exact:.3f} functional={functional:.3f} mctsMSE={mse:.5f}")
 
-    checkpoint_path = "yetirah_v24_posttrain.pt"
+    checkpoint_path = "yetirah_v25_posttrain.pt"
     torch.save({"model_state_dict": model.state_dict(), "optimizer_state_dict": optimizer.state_dict(), "steps": steps}, checkpoint_path)
     print(f"\nsaved checkpoint: {checkpoint_path}")
 
