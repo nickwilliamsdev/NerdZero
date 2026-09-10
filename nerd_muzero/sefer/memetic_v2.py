@@ -717,6 +717,71 @@ class FixedScalarReadout(nn.Module):
         return H[..., 0]
 
 
+
+
+class SmallDeltaStateEncoder(nn.Module):
+    """Small DeltaNet-style fast-weight encoder for goal-conditioned state.
+
+    The program controller already receives five 32-wide relational views
+    (current, target, delta, sum, product) plus seven scalar relation/horizon
+    features.  We treat those views as a short token sequence and build a
+    per-sample fast-weight matrix with the delta rule
+
+        W <- W + beta * (v - W k) outer k
+
+    before reading the final memory with a learned query.  W is ephemeral: it
+    is rebuilt from the current/goal pair on every policy/value call, so PUCT
+    remains Markov in the explicit substrate state while gaining a compact
+    adaptive relational representation.
+    """
+    def __init__(self, vector_dim: int = 32, state_dim: int = 32):
+        super().__init__()
+        self.vector_dim = vector_dim
+        self.state_dim = state_dim
+        self.token_proj = nn.Sequential(
+            nn.Linear(vector_dim, 64),
+            nn.GELU(),
+            nn.Linear(64, state_dim),
+            nn.LayerNorm(state_dim),
+        )
+        self.key = nn.Linear(state_dim, state_dim, bias=False)
+        self.value = nn.Linear(state_dim, state_dim, bias=False)
+        self.query = nn.Linear(state_dim, state_dim, bias=False)
+        self.beta = nn.Sequential(nn.Linear(state_dim, 1), nn.Sigmoid())
+        self.out = nn.Sequential(
+            nn.Linear(state_dim * 2, 64),
+            nn.GELU(),
+            nn.Linear(64, state_dim),
+            nn.LayerNorm(state_dim),
+        )
+
+    def forward(self, goal_feat: torch.Tensor) -> torch.Tensor:
+        # goal_feat layout: five vector_dim blocks + 7 relation/horizon scalars.
+        B = goal_feat.shape[0]
+        main = goal_feat[:, :5 * self.vector_dim].reshape(B, 5, self.vector_dim)
+        tail = goal_feat[:, 5 * self.vector_dim:]
+        tail_token = F.pad(tail, (0, self.vector_dim - tail.shape[-1]))[:, None, :]
+        tokens = torch.cat([main, tail_token], dim=1)  # [B,6,vector_dim]
+        z = self.token_proj(tokens)                    # [B,6,D]
+
+        W = torch.zeros(B, self.state_dim, self.state_dim, device=z.device, dtype=z.dtype)
+        reads = []
+        for t in range(z.shape[1]):
+            h = z[:, t]
+            k = F.normalize(self.key(h), dim=-1)
+            v = self.value(h)
+            q = F.normalize(self.query(h), dim=-1)
+            old = torch.bmm(W, k.unsqueeze(-1)).squeeze(-1)
+            residual = v - old
+            b = self.beta(h)
+            W = W + b.unsqueeze(-1) * residual.unsqueeze(-1) * k.unsqueeze(1)
+            reads.append(torch.bmm(W, q.unsqueeze(-1)).squeeze(-1))
+
+        read = reads[-1]
+        pooled = z.mean(dim=1)
+        return self.out(torch.cat([read, pooled], dim=-1))
+
+
 class TinyReasoner(nn.Module):
     """Factorized rule/query reasoner.
 
@@ -836,8 +901,14 @@ class TinyReasoner(nn.Module):
         # it selects the next primitive operator. This makes program inference
         # iterative rather than classifying a whole program from a static rule.
         goal_relation_dim = input_dim * 5 + 7
+        # v28: augment the explicit current/goal relation with a compact
+        # DeltaNet-style fast-weight summary. The raw relation is retained, so
+        # this is additive representation capacity rather than a bottleneck.
+        self.delta_state_dim = 32
+        self.delta_state = SmallDeltaStateEncoder(input_dim, self.delta_state_dim)
+        program_state_dim = goal_relation_dim + self.delta_state_dim
         self.program_controller = nn.Sequential(
-            nn.Linear(goal_relation_dim, 256),
+            nn.Linear(program_state_dim, 256),
             nn.GELU(),
             nn.Linear(256, 128),
             nn.GELU(),
@@ -850,7 +921,7 @@ class TinyReasoner(nn.Module):
         # conditioned directly on current support state vs demonstrated goal,
         # matching the state distribution encountered by program search.
         self.program_value = nn.Sequential(
-            nn.Linear(goal_relation_dim, 256),
+            nn.Linear(program_state_dim, 256),
             nn.GELU(),
             nn.Linear(256, 128),
             nn.GELU(),
@@ -919,10 +990,21 @@ class TinyReasoner(nn.Module):
         horizon = horizon / 4.0
         return torch.cat([current, target, delta, summed, product, rel, horizon], dim=-1)
 
+    def program_state_features(
+        self,
+        current_H: torch.Tensor,
+        target_H: torch.Tensor,
+        remaining_steps: int | torch.Tensor = 1,
+    ) -> torch.Tensor:
+        """Explicit goal relation plus a DeltaNet fast-weight state summary."""
+        base = self.goal_features(current_H, target_H, remaining_steps)
+        delta_state = self.delta_state(base)
+        return torch.cat([base, delta_state], dim=-1)
+
     def program_policy(
         self, current_H: torch.Tensor, target_H: torch.Tensor, remaining_steps: int | torch.Tensor = 1
     ) -> torch.Tensor:
-        return self.program_controller(self.goal_features(current_H, target_H, remaining_steps))
+        return self.program_controller(self.program_state_features(current_H, target_H, remaining_steps))
 
     def program_policy_value(
         self,
@@ -930,7 +1012,7 @@ class TinyReasoner(nn.Module):
         target_H: torch.Tensor,
         remaining_steps: int | torch.Tensor = 1,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        feat = self.goal_features(current_H, target_H, remaining_steps)
+        feat = self.program_state_features(current_H, target_H, remaining_steps)
         logits = self.program_controller(feat)
         value = self.program_value(feat).squeeze(-1)
         return logits, value
@@ -1831,7 +1913,7 @@ def _standalone_neat_edge_features(coords: torch.Tensor, code: torch.Tensor) -> 
     return feats
 
 
-def load_evolved_transport_cppn(model: TinyReasoner, winner_path: str = "yetirah_v27_neat_winner.pkl"):
+def load_evolved_transport_cppn(model: TinyReasoner, winner_path: str = "yetirah_v28_neat_winner.pkl"):
     """Reload an evolved NEAT winner and install its PyTorch-NEAT CPPN graph."""
     neat, create_cppn_fn = require_pytorch_neat()
     with open(winner_path, "rb") as f:
@@ -1857,7 +1939,7 @@ def load_evolved_transport_cppn(model: TinyReasoner, winner_path: str = "yetirah
 
 
 def evolve_transport_cppn(model: TinyReasoner, generations: int = 100, pop_size: int = 32,
-                          seed: int = 0, save_path: str = "yetirah_v27_neat_winner.pkl",
+                          seed: int = 0, save_path: str = "yetirah_v28_neat_winner.pkl",
                           workers: int = 12, inner_steps: int = 10, inner_lr: float = 1e-2):
     """Evolve one shared CPPN that generates all four anchored transport laws.
 
@@ -2188,7 +2270,7 @@ def freeze_for_program_phase(model: TinyReasoner):
     """Preserve the validated algebra; train only goal policy + goal value."""
     for p in model.parameters():
         p.requires_grad_(False)
-    for module in (model.program_controller, model.program_value):
+    for module in (model.delta_state, model.program_controller, model.program_value):
         for p in module.parameters():
             p.requires_grad_(True)
 
@@ -2415,7 +2497,7 @@ def evaluate_root_search_diagnostics(
 
 
 def train_smoke_test(
-    steps: int = 2400,
+    steps: int = 3000,
     batch_size: int = 32,
     inner_rollout_steps: int = 1,
     warmup_steps: int = 250,
@@ -2452,7 +2534,7 @@ def train_smoke_test(
     print(f"params={sum(p.numel() for p in model.parameters()):,}")
     print(f"substrate_nodes={model.core.coords.shape[0]}")
     print(f"operators={model.operator_count} + STOP")
-    print(f"mode=v27 phase-aware primitive control + semantic-stopping/tiered memetic PyTorch-NEAT + deepened controllers + functional-equivalence + transposition MuZero warmup({warmup_steps}) -> supervised transport algebra -> frozen-algebra variable-length (1..4) goal-conditioned program inference")
+    print(f"mode=v28 DeltaNet fast-weight program state + phase-aware primitive control + semantic-stopping/tiered memetic PyTorch-NEAT + deepened controllers + functional-equivalence + transposition MuZero warmup({warmup_steps}) -> supervised transport algebra -> frozen-algebra variable-length (1..4) goal-conditioned program inference")
     print(f"NEAT generations={neat_generations} population={neat_population} workers={neat_workers} innerSteps={neat_inner_steps} innerLR={neat_inner_lr:g} seed={neat_seed}")
     print(f"es_every={es_every} mcts_every={mcts_train_every} mcts_samples={mcts_train_samples} train_sims={mcts_simulations} eval_sims={mcts_eval_simulations}")
 
@@ -2839,7 +2921,7 @@ def train_smoke_test(
         exact, mse, functional = vals
         print(f"  {name:20s} stringExact={exact:.3f} functional={functional:.3f} mctsMSE={mse:.5f}")
 
-    checkpoint_path = "yetirah_v27_posttrain.pt"
+    checkpoint_path = "yetirah_v28_posttrain.pt"
     torch.save({"model_state_dict": model.state_dict(), "optimizer_state_dict": optimizer.state_dict(), "steps": steps}, checkpoint_path)
     print(f"\nsaved checkpoint: {checkpoint_path}")
 
