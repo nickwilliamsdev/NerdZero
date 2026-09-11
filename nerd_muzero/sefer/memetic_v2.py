@@ -1,7 +1,7 @@
 """
 yetirah_v0.py
 
-Version 27 semantic-stopping/tiered-memetic geometry-enriched evolved PyTorch-NEAT CPPN transport + finite-horizon MuZero program-search follow-up to the supervised transport algebra of a geometry-generated operator model inspired by the architecture
+Version 29 functional-policy DeltaNet follow-up to the supervised transport algebra of a geometry-generated operator model inspired by the architecture
 we discussed:
 
 5D hypercube substrate (32 vertices)
@@ -754,6 +754,10 @@ class SmallDeltaStateEncoder(nn.Module):
             nn.Linear(64, state_dim),
             nn.LayerNorm(state_dim),
         )
+        # v29: start the fast-weight branch as a modest residual contribution.
+        # The controller can increase this gate if history-like relational memory
+        # helps, but the explicit geometric features remain the stable baseline.
+        self.output_gate = nn.Parameter(torch.tensor(-2.0))
 
     def forward(self, goal_feat: torch.Tensor) -> torch.Tensor:
         # goal_feat layout: five vector_dim blocks + 7 relation/horizon scalars.
@@ -779,7 +783,8 @@ class SmallDeltaStateEncoder(nn.Module):
 
         read = reads[-1]
         pooled = z.mean(dim=1)
-        return self.out(torch.cat([read, pooled], dim=-1))
+        state = self.out(torch.cat([read, pooled], dim=-1))
+        return torch.sigmoid(self.output_gate) * state
 
 
 class TinyReasoner(nn.Module):
@@ -900,8 +905,8 @@ class TinyReasoner(nn.Module):
         # Given the *current support state* and the demonstrated target state,
         # it selects the next primitive operator. This makes program inference
         # iterative rather than classifying a whole program from a static rule.
-        goal_relation_dim = input_dim * 5 + 7
-        # v28: augment the explicit current/goal relation with a compact
+        goal_relation_dim = input_dim * 5 + 15
+        # v29: augment the explicit current/goal relation with a compact
         # DeltaNet-style fast-weight summary. The raw relation is retained, so
         # this is additive representation capacity rather than a bottleneck.
         self.delta_state_dim = 32
@@ -971,12 +976,19 @@ class TinyReasoner(nn.Module):
         delta = target - current
         summed = target + current
         product = target * current
+        # v29: the program horizon is four, so expose cyclic evidence across
+        # that whole range rather than only +/-2. Reversed+shifted correlations
+        # help distinguish order-sensitive roll/flip compositions.
         shift_corrs = [
             self._normalized_corr(torch.roll(current, shifts=shift, dims=-1), target)
+            for shift in range(-4, 5)
+        ]
+        reversed_current = current.flip(-1)
+        reverse_shift_corrs = [
+            self._normalized_corr(torch.roll(reversed_current, shifts=shift, dims=-1), target)
             for shift in (-2, -1, 0, 1, 2)
         ]
-        reverse_corr = self._normalized_corr(current.flip(-1), target)
-        rel = torch.cat(shift_corrs + [reverse_corr], dim=-1)
+        rel = torch.cat(shift_corrs + reverse_shift_corrs, dim=-1)
         if torch.is_tensor(remaining_steps):
             horizon = remaining_steps.to(current.device, current.dtype).reshape(-1, 1)
             if horizon.shape[0] == 1 and current.shape[0] != 1:
@@ -1162,6 +1174,47 @@ def exact_horizon_value_target(
             )
         )
     return torch.stack(candidates, dim=0).max(dim=0).values
+
+
+@torch.no_grad()
+def exact_horizon_policy_target(
+    model: TinyReasoner,
+    current_H: torch.Tensor,
+    target_H: torch.Tensor,
+    remaining_steps: int,
+    beta: float = 2.0,
+    temperature: float = 0.04,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Functional-equivalence-aware policy target.
+
+    Returns a soft distribution over [op0, op1, op2, op3, STOP] based on the
+    exact best terminal value reachable after taking each first action. This
+    removes contradictory literal-string labels when several programs implement
+    the same transformation.
+    """
+    B = current_H.shape[0]
+    stop_q = terminal_goal_score(model, current_H, target_H, beta=beta)
+    if remaining_steps <= 0:
+        target = torch.zeros(B, 5, device=current_H.device, dtype=current_H.dtype)
+        target[:, 4] = 1.0
+        q = torch.zeros_like(target)
+        q[:, 4] = stop_q
+        return target, q
+
+    q_terms = []
+    for a in range(4):
+        next_H = model.transition(current_H, a)
+        q_terms.append(
+            exact_horizon_value_target(
+                model, next_H, target_H, remaining_steps - 1, action_limit=5, beta=beta
+            )
+        )
+    q_terms.append(stop_q)
+    q = torch.stack(q_terms, dim=-1)
+    # Relative Q values make the target invariant to absolute score scale.
+    centered = q - q.max(dim=-1, keepdim=True).values
+    target = torch.softmax(centered / max(float(temperature), 1e-4), dim=-1)
+    return target, q
 
 
 def latent_state_signature(state: torch.Tensor, remaining_steps: int, decimals: int = 4):
@@ -1913,7 +1966,7 @@ def _standalone_neat_edge_features(coords: torch.Tensor, code: torch.Tensor) -> 
     return feats
 
 
-def load_evolved_transport_cppn(model: TinyReasoner, winner_path: str = "yetirah_v28_neat_winner.pkl"):
+def load_evolved_transport_cppn(model: TinyReasoner, winner_path: str = "yetirah_v29_neat_winner.pkl"):
     """Reload an evolved NEAT winner and install its PyTorch-NEAT CPPN graph."""
     neat, create_cppn_fn = require_pytorch_neat()
     with open(winner_path, "rb") as f:
@@ -1939,7 +1992,7 @@ def load_evolved_transport_cppn(model: TinyReasoner, winner_path: str = "yetirah
 
 
 def evolve_transport_cppn(model: TinyReasoner, generations: int = 100, pop_size: int = 32,
-                          seed: int = 0, save_path: str = "yetirah_v28_neat_winner.pkl",
+                          seed: int = 0, save_path: str = "yetirah_v29_neat_winner.pkl",
                           workers: int = 12, inner_steps: int = 10, inner_lr: float = 1e-2):
     """Evolve one shared CPPN that generates all four anchored transport laws.
 
@@ -2497,7 +2550,7 @@ def evaluate_root_search_diagnostics(
 
 
 def train_smoke_test(
-    steps: int = 3000,
+    steps: int = 3600,
     batch_size: int = 32,
     inner_rollout_steps: int = 1,
     warmup_steps: int = 250,
@@ -2534,7 +2587,7 @@ def train_smoke_test(
     print(f"params={sum(p.numel() for p in model.parameters()):,}")
     print(f"substrate_nodes={model.core.coords.shape[0]}")
     print(f"operators={model.operator_count} + STOP")
-    print(f"mode=v28 DeltaNet fast-weight program state + phase-aware primitive control + semantic-stopping/tiered memetic PyTorch-NEAT + deepened controllers + functional-equivalence + transposition MuZero warmup({warmup_steps}) -> supervised transport algebra -> frozen-algebra variable-length (1..4) goal-conditioned program inference")
+    print(f"mode=v29 functional-Bellman policy + gated DeltaNet program state + phase-aware primitive control + semantic-stopping/tiered memetic PyTorch-NEAT + functional-equivalence + transposition MuZero warmup({warmup_steps}) -> supervised transport algebra -> frozen-algebra variable-length (1..4) goal-conditioned program inference")
     print(f"NEAT generations={neat_generations} population={neat_population} workers={neat_workers} innerSteps={neat_inner_steps} innerLR={neat_inner_lr:g} seed={neat_seed}")
     print(f"es_every={es_every} mcts_every={mcts_train_every} mcts_samples={mcts_train_samples} train_sims={mcts_simulations} eval_sims={mcts_eval_simulations}")
 
@@ -2596,7 +2649,15 @@ def train_smoke_test(
                 remaining = 4 - t
                 logits_t = model.program_policy(support_teacher, support_target, remaining_steps=remaining)[:, :5]
                 target_t = program_targets[:, t]
-                ce_terms.append(F.cross_entropy(logits_t, target_t))
+                literal_ce = F.cross_entropy(logits_t, target_t)
+                functional_target, _ = exact_horizon_policy_target(
+                    model, support_teacher.detach(), support_target.detach(), remaining,
+                    beta=2.0, temperature=0.04,
+                )
+                functional_ce = soft_policy_cross_entropy(logits_t, functional_target)
+                # Keep a small literal-program anchor for interpretable strings, but
+                # optimize primarily for actions that are functionally Bellman-valid.
+                ce_terms.append(0.20 * literal_ce + 0.80 * functional_ce)
                 acc_terms.append((logits_t.argmax(dim=-1) == target_t).float().mean())
                 support_teacher = apply_program_actions(model, support_teacher, target_t)
                 teacher_states.append(support_teacher)
@@ -2921,7 +2982,7 @@ def train_smoke_test(
         exact, mse, functional = vals
         print(f"  {name:20s} stringExact={exact:.3f} functional={functional:.3f} mctsMSE={mse:.5f}")
 
-    checkpoint_path = "yetirah_v28_posttrain.pt"
+    checkpoint_path = "yetirah_v29_posttrain.pt"
     torch.save({"model_state_dict": model.state_dict(), "optimizer_state_dict": optimizer.state_dict(), "steps": steps}, checkpoint_path)
     print(f"\nsaved checkpoint: {checkpoint_path}")
 
