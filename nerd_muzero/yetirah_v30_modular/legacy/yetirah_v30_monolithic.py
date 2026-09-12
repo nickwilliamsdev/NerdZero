@@ -1,7 +1,7 @@
 """
 yetirah_v0.py
 
-Version 21 evolved PyTorch-NEAT CPPN transport + finite-horizon MuZero program-search follow-up to the supervised transport algebra of a geometry-generated operator model inspired by the architecture
+Version 30 recovery-trained functional DeltaNet follow-up to the supervised transport algebra of a geometry-generated operator model inspired by the architecture
 we discussed:
 
 5D hypercube substrate (32 vertices)
@@ -52,7 +52,9 @@ NEAT_INPUT_NAMES = (
     + [f"src_{i}" for i in range(5)]
     + [f"diff_{i}" for i in range(5)]
     + [f"prod_{i}" for i in range(5)]
-    + ["dist", "dst_idx", "src_idx", "idx_diff", "is_diag"]
+    + ["dist", "dst_idx", "src_idx", "idx_diff", "idx_sum", "is_diag",
+       "dst_phase_sin", "dst_phase_cos", "src_phase_sin", "src_phase_cos",
+       "rel_phase_sin", "rel_phase_cos"]
     + [f"op_{i}" for i in range(8)]
 )
 NEAT_OUTPUT_NAMES = ["edge_logit"]
@@ -133,10 +135,10 @@ def neat_config_text(num_inputs: int, pop_size: int, seed: int = 0) -> str:
     return textwrap.dedent(f"""
     [NEAT]
     fitness_criterion = max
-    fitness_threshold = 12.5
+    fitness_threshold = 1e9
     pop_size = {pop_size}
     reset_on_extinction = False
-    no_fitness_termination = False
+    no_fitness_termination = True
     seed = {seed}
 
     [DefaultGenome]
@@ -155,7 +157,7 @@ def neat_config_text(num_inputs: int, pop_size: int, seed: int = 0) -> str:
     bias_mutate_rate = 0.7
     bias_replace_rate = 0.1
     compatibility_disjoint_coefficient = 1.0
-    compatibility_weight_coefficient = 0.5
+    compatibility_weight_coefficient = 0.2
     conn_add_prob = 0.35
     conn_delete_prob = 0.10
     enabled_default = True
@@ -166,7 +168,7 @@ def neat_config_text(num_inputs: int, pop_size: int, seed: int = 0) -> str:
     initial_connection = full_direct
     node_add_prob = 0.20
     node_delete_prob = 0.05
-    num_hidden = 0
+    num_hidden = 22
     num_inputs = {num_inputs}
     num_outputs = 1
     response_init_mean = 1.0
@@ -189,7 +191,7 @@ def neat_config_text(num_inputs: int, pop_size: int, seed: int = 0) -> str:
     structural_mutation_surer = default
 
     [DefaultSpeciesSet]
-    compatibility_threshold = 3.0
+    compatibility_threshold = 4.5
 
     [DefaultStagnation]
     species_fitness_func = max
@@ -197,9 +199,9 @@ def neat_config_text(num_inputs: int, pop_size: int, seed: int = 0) -> str:
     species_elitism = 2
 
     [DefaultReproduction]
-    elitism = 4
-    survival_threshold = 0.20
-    min_species_size = 4
+    elitism = 1
+    survival_threshold = 0.25
+    min_species_size = 1
     """).strip() + "\n"
 
 
@@ -224,6 +226,132 @@ class EvolvedTorchCPPN:
             out = torch.as_tensor(out, dtype=next(iter(features.values())).dtype,
                                   device=next(iter(features.values())).device)
         return out
+
+
+class DifferentiableGenomeCPPN(nn.Module):
+    """Differentiable mirror of a feed-forward NEAT genome.
+
+    Uber PyTorch-NEAT materializes connection weights as Python floats, which is
+    excellent for inference but means an optimizer cannot update the original
+    genome.  This module mirrors exactly the enabled feed-forward topology with
+    torch Parameters, supports the same CPPN activations used by this script,
+    and can write trained weights/biases/responses back into the NEAT genome.
+    """
+    def __init__(self, genome, config):
+        super().__init__()
+        self.genome = genome
+        self.config = config
+        gc = config.genome_config
+        self.input_keys = list(gc.input_keys)
+        self.output_keys = list(gc.output_keys)
+        self.input_name_by_key = {k: n for k, n in zip(self.input_keys, NEAT_INPUT_NAMES)}
+
+        self.incoming = {}
+        for key, cg in genome.connections.items():
+            if not cg.enabled:
+                continue
+            i, o = key
+            self.incoming.setdefault(o, []).append((i, key))
+
+        needed = set(self.output_keys)
+        frontier = list(self.output_keys)
+        while frontier:
+            o = frontier.pop()
+            for i, _ in self.incoming.get(o, []):
+                if i not in self.input_keys and i not in needed:
+                    needed.add(i)
+                    frontier.append(i)
+        self.node_keys = [k for k in needed if k not in self.input_keys]
+
+        # Feed-forward topological order over only nodes required by outputs.
+        order, done = [], set(self.input_keys)
+        remaining = set(self.node_keys)
+        while remaining:
+            progressed = False
+            for o in list(remaining):
+                ins = [i for i, _ in self.incoming.get(o, [])]
+                if all(i in done for i in ins):
+                    order.append(o); done.add(o); remaining.remove(o); progressed = True
+            if not progressed:
+                raise RuntimeError('Genome is not feed-forward or contains an unresolved dependency')
+        self.order = order
+
+        self.conn_params = nn.ParameterDict()
+        self.conn_param_to_gene = {}
+        for o in self.order:
+            for i, key in self.incoming.get(o, []):
+                if i not in done:
+                    continue
+                name = self._conn_name(key)
+                self.conn_params[name] = nn.Parameter(torch.tensor(float(genome.connections[key].weight)))
+                self.conn_param_to_gene[name] = key
+
+        self.bias_params = nn.ParameterDict()
+        self.response_params = nn.ParameterDict()
+        for k in self.order:
+            gene = genome.nodes[k]
+            nk = self._node_name(k)
+            self.bias_params[nk] = nn.Parameter(torch.tensor(float(gene.bias)))
+            self.response_params[nk] = nn.Parameter(torch.tensor(float(gene.response)))
+
+    @staticmethod
+    def _node_name(k):
+        return ('nneg_' + str(-k)) if k < 0 else ('npos_' + str(k))
+
+    @staticmethod
+    def _conn_name(key):
+        i, o = key
+        def enc(x): return ('neg' + str(-x)) if x < 0 else ('pos' + str(x))
+        return f'c_{enc(i)}__{enc(o)}'
+
+    @staticmethod
+    def _activate(name, x):
+        if name == 'sigmoid': return torch.sigmoid(5.0 * x)
+        if name == 'tanh': return torch.tanh(2.5 * x)
+        if name == 'abs': return torch.abs(x)
+        if name == 'gauss': return torch.exp(-5.0 * x.pow(2))
+        if name == 'identity': return x
+        if name == 'sin': return torch.sin(x)
+        if name == 'relu': return F.relu(x)
+        raise ValueError(f'Unsupported CPPN activation: {name}')
+
+    def forward(self, features: Dict[str, torch.Tensor]) -> torch.Tensor:
+        vals = {k: features[self.input_name_by_key[k]] for k in self.input_keys}
+        ref = next(iter(features.values()))
+        for o in self.order:
+            gene = self.genome.nodes[o]
+            terms = []
+            for i, key in self.incoming.get(o, []):
+                if i not in vals:
+                    continue
+                w = self.conn_params[self._conn_name(key)]
+                terms.append(w * vals[i])
+            if terms:
+                pre = torch.stack(terms, dim=0).sum(dim=0)
+            else:
+                pre = torch.zeros_like(ref)
+            nk = self._node_name(o)
+            z = self.response_params[nk] * pre + self.bias_params[nk]
+            vals[o] = self._activate(gene.activation, z)
+        return vals[self.output_keys[0]]
+
+    @torch.no_grad()
+    def write_back_(self):
+        """Lamarckian inheritance: copy trained torch parameters into genes."""
+        gc = self.config.genome_config
+        for name, key in self.conn_param_to_gene.items():
+            v = float(self.conn_params[name].detach().cpu().item())
+            v = max(float(gc.weight_min_value), min(float(gc.weight_max_value), v))
+            self.genome.connections[key].weight = v
+        for k in self.order:
+            nk = self._node_name(k)
+            b = float(self.bias_params[nk].detach().cpu().item())
+            r = float(self.response_params[nk].detach().cpu().item())
+            b = max(float(gc.bias_min_value), min(float(gc.bias_max_value), b))
+            r = max(float(gc.response_min_value), min(float(gc.response_max_value), r))
+            self.genome.nodes[k].bias = b
+            self.genome.nodes[k].response = r
+
 
 
 # ---------------------------------------------------------------------------
@@ -432,7 +560,21 @@ class OperatorHyperNet(nn.Module):
         feats["dst_idx"] = dst_idx
         feats["src_idx"] = src_idx
         feats["idx_diff"] = dst_idx - src_idx
+        feats["idx_sum"] = dst_idx + src_idx
         feats["is_diag"] = torch.eye(n, device=coords.device, dtype=coords.dtype)
+
+        # Generic cyclic coordinates. These expose the ring topology without
+        # hard-coding a particular primitive such as roll+1.
+        phase = torch.arange(n, device=coords.device, dtype=coords.dtype) * (2.0 * math.pi / n)
+        dst_phase = phase[:, None].expand(n, n)
+        src_phase = phase[None, :].expand(n, n)
+        rel_phase = src_phase - dst_phase
+        feats["dst_phase_sin"] = torch.sin(dst_phase)
+        feats["dst_phase_cos"] = torch.cos(dst_phase)
+        feats["src_phase_sin"] = torch.sin(src_phase)
+        feats["src_phase_cos"] = torch.cos(src_phase)
+        feats["rel_phase_sin"] = torch.sin(rel_phase)
+        feats["rel_phase_cos"] = torch.cos(rel_phase)
         c = code.detach()
         for i in range(self.code_dim):
             feats[f"op_{i}"] = torch.ones_like(dist) * c[i]
@@ -575,6 +717,76 @@ class FixedScalarReadout(nn.Module):
         return H[..., 0]
 
 
+
+
+class SmallDeltaStateEncoder(nn.Module):
+    """Small DeltaNet-style fast-weight encoder for goal-conditioned state.
+
+    The program controller already receives five 32-wide relational views
+    (current, target, delta, sum, product) plus seven scalar relation/horizon
+    features.  We treat those views as a short token sequence and build a
+    per-sample fast-weight matrix with the delta rule
+
+        W <- W + beta * (v - W k) outer k
+
+    before reading the final memory with a learned query.  W is ephemeral: it
+    is rebuilt from the current/goal pair on every policy/value call, so PUCT
+    remains Markov in the explicit substrate state while gaining a compact
+    adaptive relational representation.
+    """
+    def __init__(self, vector_dim: int = 32, state_dim: int = 32):
+        super().__init__()
+        self.vector_dim = vector_dim
+        self.state_dim = state_dim
+        self.token_proj = nn.Sequential(
+            nn.Linear(vector_dim, 64),
+            nn.GELU(),
+            nn.Linear(64, state_dim),
+            nn.LayerNorm(state_dim),
+        )
+        self.key = nn.Linear(state_dim, state_dim, bias=False)
+        self.value = nn.Linear(state_dim, state_dim, bias=False)
+        self.query = nn.Linear(state_dim, state_dim, bias=False)
+        self.beta = nn.Sequential(nn.Linear(state_dim, 1), nn.Sigmoid())
+        self.out = nn.Sequential(
+            nn.Linear(state_dim * 2, 64),
+            nn.GELU(),
+            nn.Linear(64, state_dim),
+            nn.LayerNorm(state_dim),
+        )
+        # v29: start the fast-weight branch as a modest residual contribution.
+        # The controller can increase this gate if history-like relational memory
+        # helps, but the explicit geometric features remain the stable baseline.
+        self.output_gate = nn.Parameter(torch.tensor(-2.0))
+
+    def forward(self, goal_feat: torch.Tensor) -> torch.Tensor:
+        # goal_feat layout: five vector_dim blocks + 7 relation/horizon scalars.
+        B = goal_feat.shape[0]
+        main = goal_feat[:, :5 * self.vector_dim].reshape(B, 5, self.vector_dim)
+        tail = goal_feat[:, 5 * self.vector_dim:]
+        tail_token = F.pad(tail, (0, self.vector_dim - tail.shape[-1]))[:, None, :]
+        tokens = torch.cat([main, tail_token], dim=1)  # [B,6,vector_dim]
+        z = self.token_proj(tokens)                    # [B,6,D]
+
+        W = torch.zeros(B, self.state_dim, self.state_dim, device=z.device, dtype=z.dtype)
+        reads = []
+        for t in range(z.shape[1]):
+            h = z[:, t]
+            k = F.normalize(self.key(h), dim=-1)
+            v = self.value(h)
+            q = F.normalize(self.query(h), dim=-1)
+            old = torch.bmm(W, k.unsqueeze(-1)).squeeze(-1)
+            residual = v - old
+            b = self.beta(h)
+            W = W + b.unsqueeze(-1) * residual.unsqueeze(-1) * k.unsqueeze(1)
+            reads.append(torch.bmm(W, q.unsqueeze(-1)).squeeze(-1))
+
+        read = reads[-1]
+        pooled = z.mean(dim=1)
+        state = self.out(torch.cat([read, pooled], dim=-1))
+        return torch.sigmoid(self.output_gate) * state
+
+
 class TinyReasoner(nn.Module):
     """Factorized rule/query reasoner.
 
@@ -635,20 +847,34 @@ class TinyReasoner(nn.Module):
 
         # Controller may inspect both the fixed rule latent and evolving query
         # workspace. Operator execution itself never receives R.
+        # v27: primitive control is explicitly phase-aware. For distribution-
+        # preserving transforms (roll/negate/flip), the post-transform state can
+        # be statistically indistinguishable from a fresh pre-transform state;
+        # identity is literally unchanged. A stationary H+rule policy therefore
+        # cannot consistently learn "apply once, then HALT". We append a scalar
+        # primitive phase: 0 before the atomic action, 1 after it.
+        primitive_policy_in = n_nodes * node_dim + rule_dim + 1
+        primitive_summary_in = node_dim + rule_dim + 1
         self.full_state_to_policy = nn.Sequential(
-            nn.Linear(n_nodes * node_dim + rule_dim, 192),
+            nn.Linear(primitive_policy_in, 256),
             nn.GELU(),
-            nn.Linear(192, operator_code_dim),
+            nn.Linear(256, 128),
+            nn.GELU(),
+            nn.Linear(128, operator_code_dim),
         )
         self.halt_head = nn.Sequential(
-            nn.Linear(node_dim + rule_dim, 64),
+            nn.Linear(primitive_summary_in, 128),
+            nn.GELU(),
+            nn.Linear(128, 64),
             nn.GELU(),
             nn.Linear(64, 1),
         )
         self.value_head = nn.Sequential(
-            nn.Linear(node_dim + rule_dim, 96),
+            nn.Linear(primitive_summary_in, 128),
             nn.GELU(),
-            nn.Linear(96, 1),
+            nn.Linear(128, 64),
+            nn.GELU(),
+            nn.Linear(64, 1),
             nn.Tanh(),
         )
 
@@ -679,24 +905,34 @@ class TinyReasoner(nn.Module):
         # Given the *current support state* and the demonstrated target state,
         # it selects the next primitive operator. This makes program inference
         # iterative rather than classifying a whole program from a static rule.
-        goal_relation_dim = input_dim * 5 + 7
+        goal_relation_dim = input_dim * 5 + 15
+        # v29: augment the explicit current/goal relation with a compact
+        # DeltaNet-style fast-weight summary. The raw relation is retained, so
+        # this is additive representation capacity rather than a bottleneck.
+        self.delta_state_dim = 32
+        self.delta_state = SmallDeltaStateEncoder(input_dim, self.delta_state_dim)
+        program_state_dim = goal_relation_dim + self.delta_state_dim
         self.program_controller = nn.Sequential(
-            nn.Linear(goal_relation_dim, 192),
+            nn.Linear(program_state_dim, 256),
             nn.GELU(),
-            nn.Linear(192, 96),
+            nn.Linear(256, 128),
             nn.GELU(),
-            nn.Linear(96, 5),  # four primitive operators + STOP
+            nn.Linear(128, 64),
+            nn.GELU(),
+            nn.Linear(64, 5),  # four primitive operators + STOP
         )
 
         # MuZero-style goal value. Unlike the primitive value head, this is
         # conditioned directly on current support state vs demonstrated goal,
         # matching the state distribution encountered by program search.
         self.program_value = nn.Sequential(
-            nn.Linear(goal_relation_dim, 192),
+            nn.Linear(program_state_dim, 256),
             nn.GELU(),
-            nn.Linear(192, 96),
+            nn.Linear(256, 128),
             nn.GELU(),
-            nn.Linear(96, 1),
+            nn.Linear(128, 64),
+            nn.GELU(),
+            nn.Linear(64, 1),
             nn.Sigmoid(),
         )
 
@@ -740,12 +976,19 @@ class TinyReasoner(nn.Module):
         delta = target - current
         summed = target + current
         product = target * current
+        # v29: the program horizon is four, so expose cyclic evidence across
+        # that whole range rather than only +/-2. Reversed+shifted correlations
+        # help distinguish order-sensitive roll/flip compositions.
         shift_corrs = [
             self._normalized_corr(torch.roll(current, shifts=shift, dims=-1), target)
+            for shift in range(-4, 5)
+        ]
+        reversed_current = current.flip(-1)
+        reverse_shift_corrs = [
+            self._normalized_corr(torch.roll(reversed_current, shifts=shift, dims=-1), target)
             for shift in (-2, -1, 0, 1, 2)
         ]
-        reverse_corr = self._normalized_corr(current.flip(-1), target)
-        rel = torch.cat(shift_corrs + [reverse_corr], dim=-1)
+        rel = torch.cat(shift_corrs + reverse_shift_corrs, dim=-1)
         if torch.is_tensor(remaining_steps):
             horizon = remaining_steps.to(current.device, current.dtype).reshape(-1, 1)
             if horizon.shape[0] == 1 and current.shape[0] != 1:
@@ -759,10 +1002,21 @@ class TinyReasoner(nn.Module):
         horizon = horizon / 4.0
         return torch.cat([current, target, delta, summed, product, rel, horizon], dim=-1)
 
+    def program_state_features(
+        self,
+        current_H: torch.Tensor,
+        target_H: torch.Tensor,
+        remaining_steps: int | torch.Tensor = 1,
+    ) -> torch.Tensor:
+        """Explicit goal relation plus a DeltaNet fast-weight state summary."""
+        base = self.goal_features(current_H, target_H, remaining_steps)
+        delta_state = self.delta_state(base)
+        return torch.cat([base, delta_state], dim=-1)
+
     def program_policy(
         self, current_H: torch.Tensor, target_H: torch.Tensor, remaining_steps: int | torch.Tensor = 1
     ) -> torch.Tensor:
-        return self.program_controller(self.goal_features(current_H, target_H, remaining_steps))
+        return self.program_controller(self.program_state_features(current_H, target_H, remaining_steps))
 
     def program_policy_value(
         self,
@@ -770,7 +1024,7 @@ class TinyReasoner(nn.Module):
         target_H: torch.Tensor,
         remaining_steps: int | torch.Tensor = 1,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        feat = self.goal_features(current_H, target_H, remaining_steps)
+        feat = self.program_state_features(current_H, target_H, remaining_steps)
         logits = self.program_controller(feat)
         value = self.program_value(feat).squeeze(-1)
         return logits, value
@@ -792,14 +1046,33 @@ class TinyReasoner(nn.Module):
         attn = torch.softmax(score / math.sqrt(self.node_dim), dim=-1)
         return torch.einsum("bn,bnd->bd", attn, H)
 
-    def policy_value(self, H: torch.Tensor, rule: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def policy_value(
+        self,
+        H: torch.Tensor,
+        rule: torch.Tensor,
+        primitive_phase: int | float | torch.Tensor = 0,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Primitive policy/value with explicit pre/post-action phase.
+
+        primitive_phase=0 means choose the atomic operator.
+        primitive_phase=1 means the atomic action has been applied and HALT is
+        now a valid completion decision. This resolves an identifiability problem
+        for distribution-preserving primitives and identity.
+        """
         z = self.pool(H)
         flat = H.flatten(start_dim=1)
-        q = self.full_state_to_policy(torch.cat([flat, rule], dim=-1))
+        if torch.is_tensor(primitive_phase):
+            phase = primitive_phase.to(H.device, H.dtype).reshape(-1, 1)
+            if phase.shape[0] == 1 and H.shape[0] != 1:
+                phase = phase.expand(H.shape[0], 1)
+        else:
+            phase = torch.full((H.shape[0], 1), float(primitive_phase), device=H.device, dtype=H.dtype)
+        q = self.full_state_to_policy(torch.cat([flat, rule, phase], dim=-1))
         op_logits = q @ self.core.operator_codes.t() / math.sqrt(q.shape[-1])
-        halt_logit = self.halt_head(torch.cat([z, rule], dim=-1))
+        summary = torch.cat([z, rule, phase], dim=-1)
+        halt_logit = self.halt_head(summary)
         logits = torch.cat([op_logits, halt_logit], dim=-1)
-        value = self.value_head(torch.cat([z, rule], dim=-1)).squeeze(-1)
+        value = self.value_head(summary).squeeze(-1)
         return logits, value
 
     def transition(self, H: torch.Tensor, action: int) -> torch.Tensor:
@@ -901,6 +1174,48 @@ def exact_horizon_value_target(
             )
         )
     return torch.stack(candidates, dim=0).max(dim=0).values
+
+
+@torch.no_grad()
+def exact_horizon_policy_target(
+    model: TinyReasoner,
+    current_H: torch.Tensor,
+    target_H: torch.Tensor,
+    remaining_steps: int,
+    beta: float = 2.0,
+    margin: float = 0.01,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Functional-equivalence-aware *decisive* policy target.
+
+    v29 used a softmax over exact Bellman Q values. Because several actions can
+    have numerically close Q values, that target often remained too diffuse.
+    v30 instead gives equal probability only to actions within ``margin`` of the
+    exact best Q. This preserves genuine functional equivalence while providing
+    a much sharper training signal for the learned prior.
+    """
+    B = current_H.shape[0]
+    stop_q = terminal_goal_score(model, current_H, target_H, beta=beta)
+    if remaining_steps <= 0:
+        target = torch.zeros(B, 5, device=current_H.device, dtype=current_H.dtype)
+        target[:, 4] = 1.0
+        q = torch.zeros_like(target)
+        q[:, 4] = stop_q
+        return target, q
+
+    q_terms = []
+    for a in range(4):
+        next_H = model.transition(current_H, a)
+        q_terms.append(
+            exact_horizon_value_target(
+                model, next_H, target_H, remaining_steps - 1, action_limit=5, beta=beta
+            )
+        )
+    q_terms.append(stop_q)
+    q = torch.stack(q_terms, dim=-1)
+    best = q.max(dim=-1, keepdim=True).values
+    near_best = (q >= (best - float(margin))).to(q.dtype)
+    target = near_best / near_best.sum(dim=-1, keepdim=True).clamp_min(1.0)
+    return target, q
 
 
 def latent_state_signature(state: torch.Tensor, remaining_steps: int, decimals: int = 4):
@@ -1199,6 +1514,38 @@ def deterministic_operator_rollout(
 
 
 @torch.no_grad()
+def deterministic_primitive_rollout_with_halt(
+    model: TinyReasoner, rule: torch.Tensor, H: torch.Tensor, max_steps: int = 4
+):
+    """Primitive-policy rollout that respects the model's HALT action.
+
+    Unlike the legacy diagnostic, this does not force ten operator applications.
+    Once HALT is selected the sample stays fixed for the remainder of the trace.
+    """
+    A = model.core.adjacency()
+    B = H.shape[0]
+    active = torch.ones(B, dtype=torch.bool, device=H.device)
+    traces = []
+    for _ in range(max_steps):
+        phase = 0 if len(traces) == 0 else 1
+        logits, _ = model.policy_value(H, rule, primitive_phase=phase)
+        actions = logits.argmax(dim=-1)
+        actions = torch.where(active, actions, torch.full_like(actions, model.HALT_ACTION))
+        traces.append(actions)
+        do_op = active & (actions < model.operator_count)
+        if do_op.any():
+            H_new = H.clone()
+            H_new[do_op] = apply_selected_actions(model, H[do_op], actions[do_op], A)
+            H = H_new
+        active = active & (actions != model.HALT_ACTION)
+        if not active.any():
+            break
+    if not traces:
+        traces = [torch.full((B,), model.HALT_ACTION, device=H.device, dtype=torch.long)]
+    return H, torch.stack(traces, dim=1)
+
+
+@torch.no_grad()
 def apply_selected_actions(model, H, actions, adjacency=None):
     if adjacency is None:
         adjacency = model.core.adjacency()
@@ -1461,20 +1808,27 @@ def _sequence_summary(sequences: torch.Tensor, top_k: int = 5):
 
 
 @torch.no_grad()
-def evaluate_operator_rollout(model: TinyReasoner, task_source: SyntheticTaskBatch, device, batch_size: int = 1024, rollout_steps: int = 1):
+def evaluate_operator_rollout(model: TinyReasoner, task_source: SyntheticTaskBatch, device, batch_size: int = 1024, rollout_steps: int = 2):
     model.eval()
     demo_x, demo_y, query_x, query_y, task_ids = task_source.sample(batch_size, device)
     rule = model.encode_rule(demo_x, demo_y)
     H0 = model.encode_query(query_x)
     direct = model.decode_direct(H0, rule)
-    H, sequences = deterministic_operator_rollout(model, rule, H0, steps=rollout_steps)
+    H, sequences = deterministic_primitive_rollout_with_halt(model, rule, H0, max_steps=rollout_steps)
     pred = model.decode_query(H)
     direct_per = F.mse_loss(direct, query_y, reduction="none").mean(dim=-1)
     rollout_per = F.mse_loss(pred, query_y, reduction="none").mean(dim=-1)
     target_energy = query_y.pow(2).mean(dim=-1).clamp_min(1e-6)
     first_actions = sequences[:, 0]
-    usage = torch.bincount(first_actions, minlength=model.operator_count).float() / batch_size
-    top_usage = torch.topk(usage, k=min(8, model.operator_count))
+    first_action_acc = (first_actions == task_ids).float().mean()
+    # Measure completion separately from first-action selection using the known
+    # anchored primitive transition, so a bad first action cannot contaminate the
+    # HALT diagnostic.
+    H_oracle = apply_selected_actions(model, H0, task_ids)
+    post_logits, _ = model.policy_value(H_oracle, rule, primitive_phase=1)
+    post_halt_acc = (post_logits.argmax(dim=-1) == model.HALT_ACTION).float().mean()
+    usage = torch.bincount(first_actions, minlength=model.num_actions).float() / batch_size
+    top_usage = torch.topk(usage, k=min(8, model.num_actions))
     sep, pair = operator_separation_loss(model, H0, max_batch=min(32, batch_size))
     per_task = {}
     for task_id, name in enumerate(task_source.TRAIN_NAMES):
@@ -1494,6 +1848,8 @@ def evaluate_operator_rollout(model: TinyReasoner, task_source: SyntheticTaskBat
         "sep_loss": float(sep.item()),
         "top_ops": top_usage.indices.tolist(),
         "top_usage": top_usage.values.tolist(),
+        "first_action_acc": float(first_action_acc.item()),
+        "post_halt_acc": float(post_halt_acc.item()),
         "per_task": per_task,
     }
 
@@ -1594,13 +1950,24 @@ def _standalone_neat_edge_features(coords: torch.Tensor, code: torch.Tensor) -> 
     feats["dst_idx"] = dst_idx
     feats["src_idx"] = src_idx
     feats["idx_diff"] = dst_idx - src_idx
+    feats["idx_sum"] = dst_idx + src_idx
     feats["is_diag"] = torch.eye(n, device=coords.device, dtype=coords.dtype)
+    phase = torch.arange(n, device=coords.device, dtype=coords.dtype) * (2.0 * math.pi / n)
+    dst_phase = phase[:, None].expand(n, n)
+    src_phase = phase[None, :].expand(n, n)
+    rel_phase = src_phase - dst_phase
+    feats["dst_phase_sin"] = torch.sin(dst_phase)
+    feats["dst_phase_cos"] = torch.cos(dst_phase)
+    feats["src_phase_sin"] = torch.sin(src_phase)
+    feats["src_phase_cos"] = torch.cos(src_phase)
+    feats["rel_phase_sin"] = torch.sin(rel_phase)
+    feats["rel_phase_cos"] = torch.cos(rel_phase)
     for i in range(code.numel()):
         feats[f"op_{i}"] = torch.ones_like(dist) * code[i].detach()
     return feats
 
 
-def load_evolved_transport_cppn(model: TinyReasoner, winner_path: str = "yetirah_v22_neat_winner.pkl"):
+def load_evolved_transport_cppn(model: TinyReasoner, winner_path: str = "yetirah_v30_neat_winner.pkl"):
     """Reload an evolved NEAT winner and install its PyTorch-NEAT CPPN graph."""
     neat, create_cppn_fn = require_pytorch_neat()
     with open(winner_path, "rb") as f:
@@ -1625,9 +1992,9 @@ def load_evolved_transport_cppn(model: TinyReasoner, winner_path: str = "yetirah
     return genome, config
 
 
-def evolve_transport_cppn(model: TinyReasoner, generations: int = 100, pop_size: int = 256,
-                          seed: int = 0, save_path: str = "yetirah_v22_neat_winner.pkl",
-                          workers: int = 12):
+def evolve_transport_cppn(model: TinyReasoner, generations: int = 100, pop_size: int = 32,
+                          seed: int = 0, save_path: str = "yetirah_v30_neat_winner.pkl",
+                          workers: int = 12, inner_steps: int = 10, inner_lr: float = 1e-2):
     """Evolve one shared CPPN that generates all four anchored transport laws.
 
     Fitness rewards low transport CE, correct argmax permutation rows, low row
@@ -1653,7 +2020,7 @@ def evolve_transport_cppn(model: TinyReasoner, generations: int = 100, pop_size:
     coords = model.core.coords.detach().cpu()
     codes = model.core.operator_codes.detach().cpu().clone()
 
-    best_seen = {"fitness": -1e30, "ce": None, "acc": None, "ent": None, "c2": None, "c3": None}
+    best_seen = {"fitness": -1e30, "ce": None, "acc": None, "ent": None, "c2": None, "c3": None, "loss0": None, "lossT": None, "learn": None, "auc": None}
 
     def _transport_matrices(runtime):
         mats = []
@@ -1682,6 +2049,54 @@ def evolve_transport_cppn(model: TinyReasoner, generations: int = 100, pop_size:
     depth2 = [(a,b) for a in range(4) for b in range(4)]
     depth3 = [(a,b,c) for a in range(4) for b in range(4) for c in range(4)]
 
+    def _diff_transport_matrices(runtime):
+        mats = []
+        for pid in range(4):
+            logits = runtime(_standalone_neat_edge_features(coords, codes[pid]))
+            mats.append(torch.softmax(logits, dim=-1))
+        return mats
+
+    def _diff_composition_ce(mats, seqs):
+        n = coords.shape[0]
+        rows = torch.arange(n)
+        ces = []
+        for seq in seqs:
+            pred = _compose(mats, seq)
+            tgt = _compose(target_mats, seq)
+            src = tgt.argmax(dim=-1)
+            chosen = pred[rows, src].clamp_min(1e-8)
+            ces.append(-chosen.log().mean())
+        return torch.stack(ces).mean()
+
+    def _inner_loss(runtime):
+        mats = _diff_transport_matrices(runtime)
+        n = coords.shape[0]
+        rows = torch.arange(n)
+        primitive_ces, target_probs = [], []
+        for pid, P in enumerate(mats):
+            src = primitive_transport_sources(pid, n, coords.device)
+            chosen = P[rows, src].clamp_min(1e-8)
+            primitive_ces.append(-chosen.log().mean())
+            target_probs.append(chosen.mean())
+        primitive_ces_t = torch.stack(primitive_ces)
+        probs = torch.stack(target_probs)
+
+        # Adaptive balancing: weak primitives receive more of the gradient budget.
+        # Detaching the weights prevents the weighting rule itself from becoming
+        # another optimization path; gradients still flow through each CE term.
+        inv = 1.0 / probs.detach().clamp_min(0.02)
+        weights = inv / inv.mean()
+        pce = (weights * primitive_ces_t).mean()
+
+        # Strong smooth bottleneck pressure. This approximates max-loss/min-quality
+        # without the discontinuity of argmax accuracy, so the inner loop directly
+        # attacks whichever primitive is currently weakest.
+        tau = 0.08
+        soft_min_prob = -tau * torch.logsumexp(-probs / tau, dim=0)
+        c2 = _diff_composition_ce(mats, depth2)
+        c3 = _diff_composition_ce(mats, depth3)
+        return pce + 0.35 * c2 + 0.15 * c3 + 2.00 * (1.0 - soft_min_prob)
+
     def _composition_score(mats, seqs):
         accs, ces = [], []
         n = coords.shape[0]
@@ -1695,9 +2110,31 @@ def evolve_transport_cppn(model: TinyReasoner, generations: int = 100, pop_size:
             accs.append((pred.argmax(dim=-1) == src).float().mean())
         return torch.stack(ces).mean(), torch.stack(accs).mean()
 
-    def score_one(item, neat_config):
+    def score_one(item, neat_config, adapt_steps: int):
         gid, genome = item
         try:
+            # Tiered memetic inner loop. Every genome gets a cheap adaptation pass;
+            # promising genomes are revisited below for additional inherited steps.
+            # Because trained parameters are written back into the actual genome,
+            # later tiers continue from the weights learned by earlier tiers.
+            diff_runtime = DifferentiableGenomeCPPN(genome, neat_config)
+            opt = torch.optim.Adam(diff_runtime.parameters(), lr=inner_lr)
+            with torch.no_grad():
+                loss0 = float(_inner_loss(diff_runtime).item())
+            qualities = []
+            for _ in range(max(0, int(adapt_steps))):
+                loss = _inner_loss(diff_runtime)
+                opt.zero_grad(set_to_none=True)
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(diff_runtime.parameters(), 5.0)
+                opt.step()
+                qualities.append(float(torch.exp(-loss.detach()).item()))
+            with torch.no_grad():
+                lossT = float(_inner_loss(diff_runtime).item())
+            diff_runtime.write_back_()
+
+            # Re-materialize through Uber PyTorch-NEAT so fitness reflects the
+            # exact graph used downstream, not only the differentiable mirror.
             runtime = EvolvedTorchCPPN(genome, neat_config, create_cppn_fn)
             with torch.no_grad():
                 ce, acc, ent = _neat_transport_metrics_from_runtime(runtime, coords, codes)
@@ -1705,51 +2142,125 @@ def evolve_transport_cppn(model: TinyReasoner, generations: int = 100, pop_size:
                 c2_ce, c2_acc = _composition_score(mats, depth2)
                 c3_ce, c3_acc = _composition_score(mats, depth3)
             ce_v = float(ce.item())
+            acc_list = [float(v) for v in acc.tolist()]
             acc_v = float(acc.mean().item())
             ent_v = float(ent.mean().item())
             c2_ce_v, c2_acc_v = float(c2_ce.item()), float(c2_acc.item())
             c3_ce_v, c3_acc_v = float(c3_ce.item()), float(c3_acc.item())
             complexity = len(genome.nodes) + len(genome.connections)
-            # Primitive fidelity remains dominant, but composition quality now
-            # determines whether a compact transport law is actually algebra-friendly.
+            min_acc_v = min(acc_list)
+            acc_spread_v = max(acc_list) - min_acc_v
+            learnability = max(-1.0, min(1.0, (loss0 - lossT) / (abs(loss0) + 1e-8)))
+            auc_quality = sum(qualities) / max(1, len(qualities)) if qualities else math.exp(-lossT)
             fitness = (
-                4.0 * acc_v + 3.0 * math.exp(-ce_v)
+                3.0 * acc_v + 6.0 * min_acc_v + 3.0 * math.exp(-ce_v)
                 + 2.0 * c2_acc_v + 1.5 * math.exp(-c2_ce_v)
                 + 1.0 * c3_acc_v + 0.75 * math.exp(-c3_ce_v)
+                + 1.25 * math.exp(-lossT)
+                + 0.75 * learnability + 0.50 * auc_quality
+                - 0.25 * acc_spread_v
                 - 0.05 * ent_v - 0.0005 * complexity
             )
-            return gid, fitness, ce_v, acc_v, ent_v, c2_ce_v, c2_acc_v, c3_ce_v, c3_acc_v
+            return (gid, fitness, ce_v, acc_v, ent_v, c2_ce_v, c2_acc_v,
+                    c3_ce_v, c3_acc_v, loss0, lossT, learnability, auc_quality,
+                    acc_list, int(adapt_steps))
         except Exception:
-            return gid, -1e9, 99.0, 0.0, 1.0, 99.0, 0.0, 99.0, 0.0
+            return (gid, -1e9, 99.0, 0.0, 1.0, 99.0, 0.0, 99.0, 0.0,
+                    99.0, 99.0, -1.0, 0.0, [0.0, 0.0, 0.0, 0.0], int(adapt_steps))
 
-    def eval_genomes(genomes, neat_config):
-        genomes = list(genomes)
-        # Threading is safe here because each genome gets its own immutable runtime;
-        # most tensor work releases the GIL. Keep workers modest on DGX Spark so
-        # NEAT bookkeeping does not oversubscribe the 20-core CPU.
+    # Semantic stopping target: don't terminate merely because a scalar fitness
+    # happens to cross a threshold. The transport algebra itself must be strong.
+    semantic_target = dict(min_primitive=0.95, depth2=0.95, depth3=0.90)
+    semantic_winner = {"genome": None, "metrics": None}
+
+    class _SemanticStop(RuntimeError):
+        pass
+
+    def _run_items(items, neat_config, steps):
+        if not items:
+            return []
         if workers > 1:
             from concurrent.futures import ThreadPoolExecutor
             with ThreadPoolExecutor(max_workers=workers) as ex:
-                results = list(ex.map(lambda item: score_one(item, neat_config), genomes))
-        else:
-            results = [score_one(item, neat_config) for item in genomes]
+                return list(ex.map(lambda item: score_one(item, neat_config, steps), items))
+        return [score_one(item, neat_config, steps) for item in items]
+
+    def eval_genomes(genomes, neat_config):
+        genomes = list(genomes)
         by_id = {gid: genome for gid, genome in genomes}
-        for gid, fitness, ce_v, acc_v, ent_v, c2_ce_v, c2_acc_v, c3_ce_v, c3_acc_v in results:
+
+        # Successive-halving style adaptation budget. For inner_steps=32 this is
+        # 8 steps for everyone, +8 for the top quartile, +16 for the top decile.
+        base_steps = max(1, inner_steps // 4)
+        mid_steps = max(0, inner_steps // 4)
+        elite_steps = max(0, inner_steps - base_steps - mid_steps)
+
+        results = _run_items(genomes, neat_config, base_steps)
+        latest = {r[0]: r for r in results}
+
+        ranked = sorted(results, key=lambda r: r[1], reverse=True)
+        mid_n = max(1, math.ceil(len(genomes) * 0.25))
+        mid_items = [(gid, by_id[gid]) for gid, *_ in ranked[:mid_n]]
+        if mid_steps > 0:
+            for r in _run_items(mid_items, neat_config, mid_steps):
+                latest[r[0]] = r
+
+        reranked = sorted(latest.values(), key=lambda r: r[1], reverse=True)
+        elite_n = max(1, math.ceil(len(genomes) * 0.10))
+        elite_items = [(gid, by_id[gid]) for gid, *_ in reranked[:elite_n]]
+        if elite_steps > 0:
+            for r in _run_items(elite_items, neat_config, elite_steps):
+                latest[r[0]] = r
+
+        final_results = list(latest.values())
+        for r in final_results:
+            (gid, fitness, ce_v, acc_v, ent_v, c2_ce_v, c2_acc_v, c3_ce_v,
+             c3_acc_v, loss0_v, lossT_v, learn_v, auc_v, acc_list, used_steps) = r
             genome = by_id[gid]
             genome.fitness = fitness
             if fitness > best_seen["fitness"]:
-                best_seen.update(fitness=fitness, ce=ce_v, acc=acc_v, ent=ent_v, c2=c2_acc_v, c3=c3_acc_v)
+                best_seen.update(fitness=fitness, ce=ce_v, acc=acc_v, ent=ent_v,
+                                 c2=c2_acc_v, c3=c3_acc_v, loss0=loss0_v,
+                                 lossT=lossT_v, learn=learn_v, auc=auc_v)
+
+        best_r = max(final_results, key=lambda r: r[1])
+        best_gid = best_r[0]
+        best_accs = best_r[13]
+        best_c2 = best_r[6]
+        best_c3 = best_r[8]
+        print(
+            f"  tiered-inner base={base_steps} top25+={mid_steps} top10+={elite_steps} "
+            f"bestMinAcc={min(best_accs):.3f} depth2={best_c2:.3f} depth3={best_c3:.3f}"
+        )
+
+        if (min(best_accs) >= semantic_target["min_primitive"]
+                and best_c2 >= semantic_target["depth2"]
+                and best_c3 >= semantic_target["depth3"]):
+            import copy
+            semantic_winner["genome"] = copy.deepcopy(by_id[best_gid])
+            semantic_winner["metrics"] = best_r
+            raise _SemanticStop(
+                f"semantic transport target met: minAcc={min(best_accs):.3f}, "
+                f"depth2={best_c2:.3f}, depth3={best_c3:.3f}"
+            )
 
     pop = neat.Population(config)
     pop.add_reporter(neat.StdOutReporter(True))
     stats = neat.StatisticsReporter()
     pop.add_reporter(stats)
-    winner = pop.run(eval_genomes, generations)
+    try:
+        winner = pop.run(eval_genomes, generations)
+    except _SemanticStop as exc:
+        winner = semantic_winner["genome"]
+        print(f"\nSemantic NEAT stop: {exc}")
+        if winner is None:
+            raise
 
     runtime = EvolvedTorchCPPN(winner, config, create_cppn_fn)
     with torch.no_grad():
         ce, acc, ent = _neat_transport_metrics_from_runtime(runtime, coords, codes)
     print("\nNEAT transport winner")
+    print(f"  innerLoop steps={inner_steps} lr={inner_lr:g} bestSeen L0={best_seen['loss0']:.4f} LT={best_seen['lossT']:.4f} learn={best_seen['learn']:.3f} aucQ={best_seen['auc']:.3f}")
     with torch.no_grad():
         mats = _transport_matrices(runtime)
         c2_ce, c2_acc = _composition_score(mats, depth2)
@@ -1813,7 +2324,7 @@ def freeze_for_program_phase(model: TinyReasoner):
     """Preserve the validated algebra; train only goal policy + goal value."""
     for p in model.parameters():
         p.requires_grad_(False)
-    for module in (model.program_controller, model.program_value):
+    for module in (model.delta_state, model.program_controller, model.program_value):
         for p in module.parameters():
             p.requires_grad_(True)
 
@@ -2040,11 +2551,11 @@ def evaluate_root_search_diagnostics(
 
 
 def train_smoke_test(
-    steps: int = 2000,
+    steps: int = 4200,
     batch_size: int = 32,
     inner_rollout_steps: int = 1,
     warmup_steps: int = 250,
-    algebra_steps: int = 1000,
+    algebra_steps: int = 1200,
     es_every: int = 0,
     diagnostic_every: int = 25,
     mcts_train_every: int = 5,
@@ -2055,6 +2566,8 @@ def train_smoke_test(
     neat_generations: int = 100,
     neat_population: int = 256,
     neat_workers: int = 12,
+    neat_inner_steps: int = 32,
+    neat_inner_lr: float = 1e-2,
     neat_seed: int = 0,
     device: str = "cuda" if torch.cuda.is_available() else "cpu",
 ):
@@ -2067,7 +2580,7 @@ def train_smoke_test(
     # training. NEAT evaluation is kept on CPU for compatibility; the installed
     # PyTorch-NEAT CPPN evaluates torch tensors on whatever device they are given.
     print(f"evolving shared transport CPPN: generations={neat_generations} population={neat_population}")
-    evolve_transport_cppn(model, generations=neat_generations, pop_size=neat_population, seed=neat_seed, workers=neat_workers)
+    evolve_transport_cppn(model, generations=neat_generations, pop_size=neat_population, seed=neat_seed, workers=neat_workers, inner_steps=neat_inner_steps, inner_lr=neat_inner_lr)
 
     optimizer = torch.optim.AdamW([p for p in model.parameters() if p.requires_grad], lr=3e-4, weight_decay=1e-4)
 
@@ -2075,8 +2588,8 @@ def train_smoke_test(
     print(f"params={sum(p.numel() for p in model.parameters()):,}")
     print(f"substrate_nodes={model.core.coords.shape[0]}")
     print(f"operators={model.operator_count} + STOP")
-    print(f"mode=v22 DGX-scaled REAL PyTorch-NEAT evolved shared transport CPPN + composition-aware fitness + functional-equivalence + transposition MuZero warmup({warmup_steps}) -> supervised transport algebra -> frozen-algebra variable-length (1..4) goal-conditioned program inference")
-    print(f"NEAT generations={neat_generations} population={neat_population} workers={neat_workers} seed={neat_seed}")
+    print(f"mode=v30 margin-Bellman + greedy-recovery DeltaNet policy + phase-aware primitive control + semantic-stopping/tiered memetic PyTorch-NEAT + functional-equivalence + transposition MuZero warmup({warmup_steps}) -> supervised transport algebra -> frozen-algebra variable-length (1..4) goal-conditioned program inference")
+    print(f"NEAT generations={neat_generations} population={neat_population} workers={neat_workers} innerSteps={neat_inner_steps} innerLR={neat_inner_lr:g} seed={neat_seed}")
     print(f"es_every={es_every} mcts_every={mcts_train_every} mcts_samples={mcts_train_samples} train_sims={mcts_simulations} eval_sims={mcts_eval_simulations}")
 
     for step in range(1, steps + 1):
@@ -2123,7 +2636,7 @@ def train_smoke_test(
         # distinct operator identities. This isolates algebra/composition from
         # unsupervised symbol discovery; the other 18 operators remain free.
         primitive_operator_targets = task_ids  # task 0..3 -> operator 0..3
-        policy_logits_h0, _ = model.policy_value(H0, rule)
+        policy_logits_h0, _ = model.policy_value(H0, rule, primitive_phase=0)
         if in_program_phase:
             support_H0 = model.encode_query(demo_x)
             support_target = model.encode_query(demo_y)
@@ -2132,18 +2645,56 @@ def train_smoke_test(
             # true program length are STOP(4), so the controller learns both
             # action identity and when to terminate.
             support_teacher = support_H0
-            ce_terms, acc_terms, teacher_states = [], [], [support_H0]
+            ce_terms, acc_terms, bellman_entropies, teacher_states = [], [], [], [support_H0]
             for t in range(4):
                 remaining = 4 - t
                 logits_t = model.program_policy(support_teacher, support_target, remaining_steps=remaining)[:, :5]
                 target_t = program_targets[:, t]
-                ce_terms.append(F.cross_entropy(logits_t, target_t))
+                literal_ce = F.cross_entropy(logits_t, target_t)
+                functional_target, _ = exact_horizon_policy_target(
+                    model, support_teacher.detach(), support_target.detach(), remaining,
+                    beta=2.0, margin=0.01,
+                )
+                functional_ce = soft_policy_cross_entropy(logits_t, functional_target)
+                # v30: functional correctness dominates; retain a small literal anchor
+                # only to keep program strings interpretable when several are valid.
+                ce_terms.append(0.10 * literal_ce + 0.90 * functional_ce)
                 acc_terms.append((logits_t.argmax(dim=-1) == target_t).float().mean())
+                bellman_entropies.append(
+                    -(functional_target * torch.log(functional_target.clamp_min(1e-8))).sum(dim=-1).mean() / math.log(5)
+                )
                 support_teacher = apply_program_actions(model, support_teacher, target_t)
                 teacher_states.append(support_teacher)
             route_supervision_loss = torch.stack(ce_terms).mean()
+            primitive_stop_loss = torch.zeros((), device=torch_device)
             program_ce_1, program_ce_2 = ce_terms[0], torch.stack(ce_terms[1:]).mean()
             program_acc_1, program_acc_2 = acc_terms[0], torch.stack(acc_terms[1:]).mean()
+            bellman_target_entropy = torch.stack(bellman_entropies).mean()
+
+            # DAgger-style recovery supervision. Roll the current greedy controller
+            # off the teacher trajectory for 1..3 steps (cycled by SGD step), then
+            # ask the exact Bellman solver what actions remain near-optimal there.
+            recovery_depth = 1 + ((step - algebra_steps - 1) % 3)
+            recovery_state = support_H0.detach()
+            for d in range(recovery_depth):
+                rem_before = max(4 - d, 1)
+                with torch.no_grad():
+                    recovery_logits = model.program_policy(
+                        recovery_state, support_target.detach(), remaining_steps=rem_before
+                    )[:, :5]
+                    recovery_action = recovery_logits.argmax(dim=-1)
+                    recovery_state = apply_program_actions(
+                        model, recovery_state, recovery_action
+                    ).detach()
+            recovery_remaining = max(4 - recovery_depth, 0)
+            recovery_live = model.program_policy(
+                recovery_state, support_target, remaining_steps=recovery_remaining
+            )[:, :5]
+            recovery_target, _ = exact_horizon_policy_target(
+                model, recovery_state.detach(), support_target.detach(), recovery_remaining,
+                beta=2.0, margin=0.01,
+            )
+            recovery_policy_loss = soft_policy_cross_entropy(recovery_live, recovery_target)
 
             # Exact finite-horizon Bellman supervision at root and teacher states.
             goal_value_losses = []
@@ -2190,11 +2741,16 @@ def train_smoke_test(
                     mcts_policy_loss = torch.stack(mcts_losses).mean()
                     mcts_root_entropy = torch.stack(mcts_entropies).mean()
         else:
+            # Primitive semantics are one operator followed by HALT. First action is
+            # anchored to operator 0..3; post-transform HALT is supervised below.
             route_supervision_loss = F.cross_entropy(
-                policy_logits_h0[:, :model.operator_count], primitive_operator_targets
+                policy_logits_h0, primitive_operator_targets
             )
+            primitive_stop_loss = torch.zeros((), device=torch_device)
             program_ce_1 = program_ce_2 = torch.zeros((), device=torch_device)
             program_acc_1 = program_acc_2 = torch.zeros((), device=torch_device)
+            bellman_target_entropy = torch.zeros((), device=torch_device)
+            recovery_policy_loss = torch.zeros((), device=torch_device)
             goal_value_loss = torch.zeros((), device=torch_device)
             mcts_policy_loss = torch.zeros((), device=torch_device)
             mcts_root_entropy = torch.zeros((), device=torch_device)
@@ -2216,8 +2772,10 @@ def train_smoke_test(
             else:
                 progress = (step - warmup_steps) / max(algebra_steps - warmup_steps, 1)
                 temperature = max(0.30, 1.0 - 0.70 * progress)
+                # Primitive training is deliberately atomic: exactly one operator.
+                # Multi-step sequencing belongs to the separate program controller.
                 H, routing_stats = differentiable_rollout(
-                    model, rule, H0, steps=inner_rollout_steps,
+                    model, rule, H0, steps=1,
                     temperature=temperature, hard=True,
                 )
                 pred = model.decode_query(H)
@@ -2225,7 +2783,8 @@ def train_smoke_test(
 
         per_sample_error = F.mse_loss(pred, query_y, reduction="none").mean(dim=-1)
         value_target = torch.exp(-per_sample_error.detach())
-        _, value = model.policy_value(H, rule)
+        value_phase = 1 if ((not in_warmup) and (not in_program_phase)) else 0
+        _, value = model.policy_value(H, rule, primitive_phase=value_phase)
         value_loss = F.mse_loss(value, value_target)
 
         codes = F.normalize(model.core.operator_codes, dim=-1)
@@ -2285,6 +2844,15 @@ def train_smoke_test(
             H_oracle = torch.cat(oracle_states, dim=0)
             oracle_atomic_loss = F.mse_loss(model.decode_query(H_oracle), query_y)
 
+            # Explicit primitive termination: after the anchored operator has been
+            # applied, the primitive policy should HALT rather than repeatedly apply
+            # the same transform. This keeps atomic reasoning distinct from programs.
+            halt_logits, _ = model.policy_value(H_oracle.detach(), rule, primitive_phase=1)
+            halt_targets = torch.full(
+                (H_oracle.shape[0],), model.HALT_ACTION, device=H_oracle.device, dtype=torch.long
+            )
+            primitive_stop_loss = F.cross_entropy(halt_logits, halt_targets)
+
             # Explicit algebraic closure target: an operator applied to the
             # encoding of x should land at the encoding of T_k(x).  The target
             # is detached because the query coordinate system is fixed after
@@ -2314,13 +2882,19 @@ def train_smoke_test(
             p_target = model.encode_query(p_demo_y)
             p_logits = model.program_policy(p_support, p_target, remaining_steps=1)
             primitive_rehearsal = F.cross_entropy(p_logits, p_task_ids)
+            p_after = apply_program_actions(model, p_support, p_task_ids)
+            p_stop_logits = model.program_policy(p_after, p_target, remaining_steps=0)
+            p_stop_targets = torch.full_like(p_task_ids, 4)
+            primitive_stop_rehearsal = F.cross_entropy(p_stop_logits, p_stop_targets)
             # Only program_controller has gradients in this phase. Do not add
             # value/diversity losses from frozen modules to the optimization.
             loss = (
-                0.25 * route_supervision_loss
-                + 0.25 * primitive_rehearsal
-                + 1.00 * goal_value_loss
-                + 1.00 * mcts_policy_loss
+                1.00 * route_supervision_loss
+                + 0.50 * recovery_policy_loss
+                + 0.15 * primitive_rehearsal
+                + 0.15 * primitive_stop_rehearsal
+                + 0.50 * goal_value_loss
+                + 0.50 * mcts_policy_loss
             )
         elif in_warmup:
             loss = (
@@ -2342,7 +2916,8 @@ def train_smoke_test(
                 + 0.01 * diversity
                 + 1e-4 * graph_reg
                 + 0.08 * op_sep_loss
-                + 0.50 * route_supervision_loss
+                + 1.50 * route_supervision_loss
+                + 0.25 * primitive_stop_loss
                 + 0.50 * oracle_atomic_loss
                 + 1.00 * latent_transition_loss
                 + 0.00 * transport_loss  # evolved CPPN is frozen; this is diagnostic only
@@ -2365,7 +2940,7 @@ def train_smoke_test(
                 pair_dist = (pair_diff.pow(2).mean(dim=(-1, -2)) + 1e-8).sqrt()
                 upper = torch.triu(torch.ones(model.operator_count, model.operator_count, device=H0.device, dtype=torch.bool), diagonal=1)
                 operator_pair_distance = pair_dist[:, upper].mean()
-                logits_diag, _ = model.policy_value(H0, rule)
+                logits_diag, _ = model.policy_value(H0, rule, primitive_phase=0)
                 p_diag = torch.softmax(logits_diag[:, :model.operator_count], dim=-1)
                 entropy = -(p_diag * torch.log(p_diag + 1e-8)).sum(dim=-1).mean()
                 normalized_entropy = entropy / math.log(model.operator_count)
@@ -2393,6 +2968,9 @@ def train_smoke_test(
                 msg += (
                     f" progCE1={program_ce_1.item():.4f} progCE2={program_ce_2.item():.4f}"
                     f" progAcc1={program_acc_1.item():.3f} progAcc2={program_acc_2.item():.3f}"
+                    f" recoverCE={recovery_policy_loss.item():.4f}"
+                    f" bellmanH={bellman_target_entropy.item():.3f}"
+                    f" deltaGate={torch.sigmoid(model.delta_state.output_gate).item():.3f}"
                     f" goalV={goal_value_loss.item():.4f} mctsCE={mcts_policy_loss.item():.4f}"
                     f" mctsH={mcts_root_entropy.item():.3f}"
                 )
@@ -2403,6 +2981,7 @@ def train_smoke_test(
                     f" taskRouteH={task_route_entropy.item():.3f}"
                     f" taskOverlap={task_route_overlap.item():.3f}"
                     f" routeCE={route_supervision_loss.item():.4f}"
+                    f" stopCE={primitive_stop_loss.item():.4f}"
                     f" oracle={oracle_atomic_loss.item():.5f}"
                     f" latent={latent_transition_loss.item():.5f}"
                     f" latentCos={latent_cosine.item():.3f}"
@@ -2439,7 +3018,7 @@ def train_smoke_test(
         exact, mse, functional = vals
         print(f"  {name:20s} stringExact={exact:.3f} functional={functional:.3f} mctsMSE={mse:.5f}")
 
-    checkpoint_path = "yetirah_v22_posttrain.pt"
+    checkpoint_path = "yetirah_v30_posttrain.pt"
     torch.save({"model_state_dict": model.state_dict(), "optimizer_state_dict": optimizer.state_dict(), "steps": steps}, checkpoint_path)
     print(f"\nsaved checkpoint: {checkpoint_path}")
 
@@ -2452,13 +3031,14 @@ def train_smoke_test(
     for name, (direct_mse, identity_mse, task_acc, count) in held_out["per_task"].items():
         print(f"  {name:8s} n={count:4d} direct={direct_mse:.5f} identity={identity_mse:.5f} taskRule={task_acc:.3f}")
 
-    op_eval = evaluate_operator_rollout(model, tasks, device, batch_size=1024, rollout_steps=inner_rollout_steps)
-    print("\nHeld-out atomic operator diagnostics (1024 fresh tasks)")
+    op_eval = evaluate_operator_rollout(model, tasks, device, batch_size=1024, rollout_steps=2)
+    print("\nHeld-out atomic operator+HALT diagnostics (1024 fresh tasks)")
     print(
         f"direct MSE: {op_eval['direct_mse']:.5f} | operator-rollout MSE: {op_eval['rollout_mse']:.5f} | "
         f"opPair: {op_eval['op_pair']:.5f} | sepLoss: {op_eval['sep_loss']:.4f}"
     )
     print("top routed operators:", list(zip(op_eval['top_ops'], [round(x, 3) for x in op_eval['top_usage']])))
+    print(f"first-action accuracy: {op_eval['first_action_acc']:.3f} | post-action HALT accuracy: {op_eval['post_halt_acc']:.3f}")
     print(f"rollout normalized MSE: {op_eval['rollout_nmse']:.5f}")
     print("primitive operator patterns:")
     for name, stats in op_eval["per_task"].items():
