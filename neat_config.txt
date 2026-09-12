@@ -1,7 +1,7 @@
 [NEAT]
 fitness_criterion     = max
 fitness_threshold     = 100.0
-pop_size              = 55
+pop_size              = 42
 reset_on_extinction   = False
 no_fitness_termination = False
 
@@ -14,7 +14,7 @@ network_type            = feedforward
 # Network parameters. 
 # 4 Inputs: [x1, y1, x2, y2]
 # 4 Outputs: [weight_q, weight_k, weight_v, weight_beta]
-num_hidden              = 2
+num_hidden              = 32
 num_inputs              = 4
 num_outputs             = 4
 initial_connection      = full_direct
@@ -23,7 +23,7 @@ feed_forward            = True
 # Activation function parameters
 activation_default      = relu
 activation_mutate_rate  = 0.0
-activation_options      = relu sigmoid tanh
+activation_options      = relu sigmoid tanh sin cos
 
 # Node response options
 aggregation_default     = sum

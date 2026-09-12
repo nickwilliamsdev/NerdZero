@@ -1,7 +1,7 @@
 """
 yetirah_v0.py
 
-Version 29 functional-policy DeltaNet follow-up to the supervised transport algebra of a geometry-generated operator model inspired by the architecture
+Version 30 recovery-trained functional DeltaNet follow-up to the supervised transport algebra of a geometry-generated operator model inspired by the architecture
 we discussed:
 
 5D hypercube substrate (32 vertices)
@@ -1183,14 +1183,15 @@ def exact_horizon_policy_target(
     target_H: torch.Tensor,
     remaining_steps: int,
     beta: float = 2.0,
-    temperature: float = 0.04,
+    margin: float = 0.01,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-    """Functional-equivalence-aware policy target.
+    """Functional-equivalence-aware *decisive* policy target.
 
-    Returns a soft distribution over [op0, op1, op2, op3, STOP] based on the
-    exact best terminal value reachable after taking each first action. This
-    removes contradictory literal-string labels when several programs implement
-    the same transformation.
+    v29 used a softmax over exact Bellman Q values. Because several actions can
+    have numerically close Q values, that target often remained too diffuse.
+    v30 instead gives equal probability only to actions within ``margin`` of the
+    exact best Q. This preserves genuine functional equivalence while providing
+    a much sharper training signal for the learned prior.
     """
     B = current_H.shape[0]
     stop_q = terminal_goal_score(model, current_H, target_H, beta=beta)
@@ -1211,9 +1212,9 @@ def exact_horizon_policy_target(
         )
     q_terms.append(stop_q)
     q = torch.stack(q_terms, dim=-1)
-    # Relative Q values make the target invariant to absolute score scale.
-    centered = q - q.max(dim=-1, keepdim=True).values
-    target = torch.softmax(centered / max(float(temperature), 1e-4), dim=-1)
+    best = q.max(dim=-1, keepdim=True).values
+    near_best = (q >= (best - float(margin))).to(q.dtype)
+    target = near_best / near_best.sum(dim=-1, keepdim=True).clamp_min(1.0)
     return target, q
 
 
@@ -1966,7 +1967,7 @@ def _standalone_neat_edge_features(coords: torch.Tensor, code: torch.Tensor) -> 
     return feats
 
 
-def load_evolved_transport_cppn(model: TinyReasoner, winner_path: str = "yetirah_v29_neat_winner.pkl"):
+def load_evolved_transport_cppn(model: TinyReasoner, winner_path: str = "yetirah_v30_neat_winner.pkl"):
     """Reload an evolved NEAT winner and install its PyTorch-NEAT CPPN graph."""
     neat, create_cppn_fn = require_pytorch_neat()
     with open(winner_path, "rb") as f:
@@ -1992,7 +1993,7 @@ def load_evolved_transport_cppn(model: TinyReasoner, winner_path: str = "yetirah
 
 
 def evolve_transport_cppn(model: TinyReasoner, generations: int = 100, pop_size: int = 32,
-                          seed: int = 0, save_path: str = "yetirah_v29_neat_winner.pkl",
+                          seed: int = 0, save_path: str = "yetirah_v30_neat_winner.pkl",
                           workers: int = 12, inner_steps: int = 10, inner_lr: float = 1e-2):
     """Evolve one shared CPPN that generates all four anchored transport laws.
 
@@ -2550,7 +2551,7 @@ def evaluate_root_search_diagnostics(
 
 
 def train_smoke_test(
-    steps: int = 3600,
+    steps: int = 4200,
     batch_size: int = 32,
     inner_rollout_steps: int = 1,
     warmup_steps: int = 250,
@@ -2587,7 +2588,7 @@ def train_smoke_test(
     print(f"params={sum(p.numel() for p in model.parameters()):,}")
     print(f"substrate_nodes={model.core.coords.shape[0]}")
     print(f"operators={model.operator_count} + STOP")
-    print(f"mode=v29 functional-Bellman policy + gated DeltaNet program state + phase-aware primitive control + semantic-stopping/tiered memetic PyTorch-NEAT + functional-equivalence + transposition MuZero warmup({warmup_steps}) -> supervised transport algebra -> frozen-algebra variable-length (1..4) goal-conditioned program inference")
+    print(f"mode=v30 margin-Bellman + greedy-recovery DeltaNet policy + phase-aware primitive control + semantic-stopping/tiered memetic PyTorch-NEAT + functional-equivalence + transposition MuZero warmup({warmup_steps}) -> supervised transport algebra -> frozen-algebra variable-length (1..4) goal-conditioned program inference")
     print(f"NEAT generations={neat_generations} population={neat_population} workers={neat_workers} innerSteps={neat_inner_steps} innerLR={neat_inner_lr:g} seed={neat_seed}")
     print(f"es_every={es_every} mcts_every={mcts_train_every} mcts_samples={mcts_train_samples} train_sims={mcts_simulations} eval_sims={mcts_eval_simulations}")
 
@@ -2644,7 +2645,7 @@ def train_smoke_test(
             # true program length are STOP(4), so the controller learns both
             # action identity and when to terminate.
             support_teacher = support_H0
-            ce_terms, acc_terms, teacher_states = [], [], [support_H0]
+            ce_terms, acc_terms, bellman_entropies, teacher_states = [], [], [], [support_H0]
             for t in range(4):
                 remaining = 4 - t
                 logits_t = model.program_policy(support_teacher, support_target, remaining_steps=remaining)[:, :5]
@@ -2652,19 +2653,48 @@ def train_smoke_test(
                 literal_ce = F.cross_entropy(logits_t, target_t)
                 functional_target, _ = exact_horizon_policy_target(
                     model, support_teacher.detach(), support_target.detach(), remaining,
-                    beta=2.0, temperature=0.04,
+                    beta=2.0, margin=0.01,
                 )
                 functional_ce = soft_policy_cross_entropy(logits_t, functional_target)
-                # Keep a small literal-program anchor for interpretable strings, but
-                # optimize primarily for actions that are functionally Bellman-valid.
-                ce_terms.append(0.20 * literal_ce + 0.80 * functional_ce)
+                # v30: functional correctness dominates; retain a small literal anchor
+                # only to keep program strings interpretable when several are valid.
+                ce_terms.append(0.10 * literal_ce + 0.90 * functional_ce)
                 acc_terms.append((logits_t.argmax(dim=-1) == target_t).float().mean())
+                bellman_entropies.append(
+                    -(functional_target * torch.log(functional_target.clamp_min(1e-8))).sum(dim=-1).mean() / math.log(5)
+                )
                 support_teacher = apply_program_actions(model, support_teacher, target_t)
                 teacher_states.append(support_teacher)
             route_supervision_loss = torch.stack(ce_terms).mean()
             primitive_stop_loss = torch.zeros((), device=torch_device)
             program_ce_1, program_ce_2 = ce_terms[0], torch.stack(ce_terms[1:]).mean()
             program_acc_1, program_acc_2 = acc_terms[0], torch.stack(acc_terms[1:]).mean()
+            bellman_target_entropy = torch.stack(bellman_entropies).mean()
+
+            # DAgger-style recovery supervision. Roll the current greedy controller
+            # off the teacher trajectory for 1..3 steps (cycled by SGD step), then
+            # ask the exact Bellman solver what actions remain near-optimal there.
+            recovery_depth = 1 + ((step - algebra_steps - 1) % 3)
+            recovery_state = support_H0.detach()
+            for d in range(recovery_depth):
+                rem_before = max(4 - d, 1)
+                with torch.no_grad():
+                    recovery_logits = model.program_policy(
+                        recovery_state, support_target.detach(), remaining_steps=rem_before
+                    )[:, :5]
+                    recovery_action = recovery_logits.argmax(dim=-1)
+                    recovery_state = apply_program_actions(
+                        model, recovery_state, recovery_action
+                    ).detach()
+            recovery_remaining = max(4 - recovery_depth, 0)
+            recovery_live = model.program_policy(
+                recovery_state, support_target, remaining_steps=recovery_remaining
+            )[:, :5]
+            recovery_target, _ = exact_horizon_policy_target(
+                model, recovery_state.detach(), support_target.detach(), recovery_remaining,
+                beta=2.0, margin=0.01,
+            )
+            recovery_policy_loss = soft_policy_cross_entropy(recovery_live, recovery_target)
 
             # Exact finite-horizon Bellman supervision at root and teacher states.
             goal_value_losses = []
@@ -2719,6 +2749,8 @@ def train_smoke_test(
             primitive_stop_loss = torch.zeros((), device=torch_device)
             program_ce_1 = program_ce_2 = torch.zeros((), device=torch_device)
             program_acc_1 = program_acc_2 = torch.zeros((), device=torch_device)
+            bellman_target_entropy = torch.zeros((), device=torch_device)
+            recovery_policy_loss = torch.zeros((), device=torch_device)
             goal_value_loss = torch.zeros((), device=torch_device)
             mcts_policy_loss = torch.zeros((), device=torch_device)
             mcts_root_entropy = torch.zeros((), device=torch_device)
@@ -2857,11 +2889,12 @@ def train_smoke_test(
             # Only program_controller has gradients in this phase. Do not add
             # value/diversity losses from frozen modules to the optimization.
             loss = (
-                0.25 * route_supervision_loss
-                + 0.25 * primitive_rehearsal
-                + 0.25 * primitive_stop_rehearsal
-                + 1.00 * goal_value_loss
-                + 1.00 * mcts_policy_loss
+                1.00 * route_supervision_loss
+                + 0.50 * recovery_policy_loss
+                + 0.15 * primitive_rehearsal
+                + 0.15 * primitive_stop_rehearsal
+                + 0.50 * goal_value_loss
+                + 0.50 * mcts_policy_loss
             )
         elif in_warmup:
             loss = (
@@ -2935,6 +2968,9 @@ def train_smoke_test(
                 msg += (
                     f" progCE1={program_ce_1.item():.4f} progCE2={program_ce_2.item():.4f}"
                     f" progAcc1={program_acc_1.item():.3f} progAcc2={program_acc_2.item():.3f}"
+                    f" recoverCE={recovery_policy_loss.item():.4f}"
+                    f" bellmanH={bellman_target_entropy.item():.3f}"
+                    f" deltaGate={torch.sigmoid(model.delta_state.output_gate).item():.3f}"
                     f" goalV={goal_value_loss.item():.4f} mctsCE={mcts_policy_loss.item():.4f}"
                     f" mctsH={mcts_root_entropy.item():.3f}"
                 )
@@ -2982,7 +3018,7 @@ def train_smoke_test(
         exact, mse, functional = vals
         print(f"  {name:20s} stringExact={exact:.3f} functional={functional:.3f} mctsMSE={mse:.5f}")
 
-    checkpoint_path = "yetirah_v29_posttrain.pt"
+    checkpoint_path = "yetirah_v30_posttrain.pt"
     torch.save({"model_state_dict": model.state_dict(), "optimizer_state_dict": optimizer.state_dict(), "steps": steps}, checkpoint_path)
     print(f"\nsaved checkpoint: {checkpoint_path}")
 

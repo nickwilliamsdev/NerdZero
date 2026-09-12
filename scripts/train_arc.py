@@ -26,7 +26,7 @@ def run_experiment():
     )
     
     # Initialize the ARC environment
-    env = ARCEnv(max_steps=32)
+    env = ARCEnv(max_steps=55)
     
     # Initialize Population
     p = neat.Population(config)
