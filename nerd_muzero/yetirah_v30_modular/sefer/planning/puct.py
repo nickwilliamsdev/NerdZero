@@ -20,12 +20,16 @@ from sefer.controllers.reasoner import TinyReasoner
 from sefer.planning.bellman import exact_horizon_value_target, goal_error, terminal_goal_score
 
 class SearchConfig:
-    simulations: int = 96
-    max_depth: int = 4
+    def __init__(self,
+                 simulations: int = 96,
+                 max_depth: int = 4,
+                 action_limit: int =5) -> None:
+        self.simulations = simulations
+        self.max_depth = max_depth
+        self.action_limit = action_limit
     c_puct: float = 1.5
     discount: float = 1.0
     terminal_beta: float = 2.0
-    action_limit: int = 5  # four validated primitives + STOP
     prior_uniform_mix: float = 0.10
     force_unvisited: bool = True
     use_transpositions: bool = True
