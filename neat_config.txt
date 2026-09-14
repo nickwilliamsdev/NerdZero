@@ -1,7 +1,7 @@
 [NEAT]
 fitness_criterion     = max
 fitness_threshold     = 100.0
-pop_size              = 233
+pop_size              = 96
 reset_on_extinction   = False
 no_fitness_termination = False
 
@@ -67,7 +67,7 @@ compatibility_disjoint_coefficient = 1.0
 compatibility_weight_coefficient   = 0.5
 
 [DefaultSpeciesSet]
-compatibility_threshold = 3.0
+compatibility_threshold = 5.0
 
 [DefaultStagnation]
 species_fitness_func = max
