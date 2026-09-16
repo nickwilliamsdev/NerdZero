@@ -46,7 +46,7 @@ class V30DGXConfig(V30Config):
 
 @dataclass
 class ARCConfig:
-    """ARC-v1.1 meta-learning defaults.
+    """ARC-v1.2 meta-learning defaults.
 
     Changes from the initial ARC-v1 run:
       * robust v30 checkpoint discovery
@@ -77,8 +77,8 @@ class ARCConfig:
     num_workers: int = 0
 
     # Three-stage curriculum.
-    codec_steps: int = 500
-    direct_steps: int = 1000
+    codec_steps: int = 1500
+    direct_steps: int = 1500
     program_steps: int = 4000
     diagnostic_every: int = 50
     eval_every: int = 500
@@ -100,22 +100,26 @@ class ARCConfig:
     goal_consistency_weight: float = 0.50
     length_weight: float = 0.005
     operator_reg_weight: float = 0.01
-    usage_balance_weight: float = 0.005
+    usage_balance_weight: float = 0.001
     value_weight: float = 0.10
+    oracle_policy_weight: float = 0.35
+    oracle_improvement_margin: float = 0.002
     gumbel_temp_start: float = 1.50
     gumbel_temp_end: float = 0.75
 
     # Progressive action/program curriculum. Fractions are cumulative progress
     # boundaries through program training. Each stage uses only the first K ARC
     # operators and at most D actions before STOP.
-    program_stage_fractions: tuple[float, float, float] = (0.20, 0.45, 0.75)
+    program_stage_fractions: tuple[float, float, float] = (0.20, 0.55, 0.80)
     program_stage_active_ops: tuple[int, int, int, int] = (4, 8, 12, 22)
     program_stage_depths: tuple[int, int, int, int] = (1, 2, 3, 4)
 
     # Grid codec.
-    cell_dim: int = 64
+    cell_dim: int = 96
     attention_heads: int = 4
     codec_dropout: float = 0.0
+    codec_latent_layers: int = 2
+    foreground_boost: float = 1.5
 
     # Adaptive operator residual around the frozen v30 algebra.
     operator_residual_rank: int = 4

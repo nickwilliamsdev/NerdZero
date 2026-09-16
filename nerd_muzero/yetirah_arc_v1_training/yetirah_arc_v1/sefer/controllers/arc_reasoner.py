@@ -12,7 +12,7 @@ from sefer.representation.arc_grid import ARCGridEncoder, ARCGridDecoder
 
 
 class ARCReasoner(nn.Module):
-    """ARC-v1.1 reasoner over the 32-node Yetirah substrate.
+    """ARC-v1.2 reasoner over the 32-node Yetirah substrate.
 
     Demonstrations -> rule embedding.
     Query grid -> current latent substrate H.
@@ -47,6 +47,7 @@ class ARCReasoner(nn.Module):
             n_slots=cfg.n_slots,
             heads=cfg.attention_heads,
             dropout=cfg.codec_dropout,
+            latent_layers=cfg.codec_latent_layers,
         )
         self.grid_decoder = ARCGridDecoder(
             max_size=cfg.max_grid_size,
@@ -57,9 +58,20 @@ class ARCReasoner(nn.Module):
             dropout=cfg.codec_dropout,
         )
 
-        pair_dim = cfg.node_dim * 4 + 4
+        # Preserve slotwise spatial relations between demonstration inputs and
+        # outputs. v1.1 mean-pooled each grid before comparison, throwing away
+        # exactly the positional information ARC rules depend on.
+        slot_pair_dim = cfg.node_dim * 4
+        self.demo_slot_encoder = nn.Sequential(
+            nn.LayerNorm(slot_pair_dim),
+            nn.Linear(slot_pair_dim, 256),
+            nn.GELU(),
+            nn.Linear(256, cfg.rule_dim),
+            nn.GELU(),
+        )
+        self.demo_slot_score = nn.Linear(cfg.rule_dim, 1)
         self.demo_pair_encoder = nn.Sequential(
-            nn.Linear(pair_dim, 256),
+            nn.Linear(cfg.rule_dim + 4, 256),
             nn.GELU(),
             nn.Linear(256, cfg.rule_dim),
             nn.GELU(),
@@ -121,13 +133,18 @@ class ARCReasoner(nn.Module):
         flat_y = demos_y.reshape(B * D, S, S)
         sx = demos_x_shapes.reshape(B * D, 2)
         sy = demos_y_shapes.reshape(B * D, 2)
-        hx = self.encode_grid(flat_x, sx).mean(dim=1).reshape(B, D, self.node_dim)
-        hy = self.encode_grid(flat_y, sy).mean(dim=1).reshape(B, D, self.node_dim)
+        hx = self.encode_grid(flat_x, sx).reshape(B, D, self.n_slots, self.node_dim)
+        hy = self.encode_grid(flat_y, sy).reshape(B, D, self.n_slots, self.node_dim)
+        slot_feat = torch.cat([hx, hy, hy - hx, hx * hy], dim=-1)
+        slot_z = self.demo_slot_encoder(slot_feat)
+        slot_score = self.demo_slot_score(slot_z).squeeze(-1)
+        slot_attn = torch.softmax(slot_score, dim=-1)[..., None]
+        spatial_pair = (slot_z * slot_attn).sum(dim=2)
         shape_feat = torch.cat([
             demos_x_shapes.float() / float(S),
             demos_y_shapes.float() / float(S),
         ], dim=-1)
-        pair_feat = torch.cat([hx, hy, hy - hx, hx * hy, shape_feat], dim=-1)
+        pair_feat = torch.cat([spatial_pair, shape_feat], dim=-1)
         z = self.demo_pair_encoder(pair_feat)
         m = demo_mask.float()[..., None]
         pooled = (z * m).sum(dim=1) / m.sum(dim=1).clamp_min(1.0)
@@ -214,7 +231,8 @@ class ARCReasoner(nn.Module):
         temperature: float = 1.0,
         hard: bool = True,
         greedy: bool = False,
-    ) -> Tuple[torch.Tensor, torch.Tensor, List[torch.Tensor]]:
+        return_trace: bool = False,
+    ):
         self.ensure_operator_bank()
         steps = max_steps or self.cfg.max_program_steps
         H = H0
@@ -224,10 +242,17 @@ class ARCReasoner(nn.Module):
         halted = torch.zeros(H.shape[0], 1, 1, device=H.device, dtype=H.dtype)
         action_weights: List[torch.Tensor] = []
         value_preds: List[torch.Tensor] = []
+        trace_states: List[torch.Tensor] = []
+        trace_logits: List[torch.Tensor] = []
+        trace_halted: List[torch.Tensor] = []
         for t in range(steps):
             logits, value = self.program_policy_value(
                 H, goal_H, rule, t, steps, active_operator_count=active_operator_count
             )
+            if return_trace:
+                trace_states.append(H)
+                trace_logits.append(logits)
+                trace_halted.append(halted)
             if greedy:
                 idx = logits.argmax(dim=-1)
                 w = F.one_hot(idx, self.num_actions).to(H.dtype)
@@ -247,7 +272,14 @@ class ARCReasoner(nn.Module):
             halted = halted + (1.0 - halted) * stop_w
             action_weights.append(w_eff)
             value_preds.append(value)
-        return H, torch.stack(action_weights, dim=1), value_preds
+        base = (H, torch.stack(action_weights, dim=1), value_preds)
+        if not return_trace:
+            return base
+        return base + ({
+            "states_before": trace_states,
+            "logits": trace_logits,
+            "halted_before": trace_halted,
+        },)
 
     @torch.no_grad()
     def greedy_actions(

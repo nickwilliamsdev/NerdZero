@@ -84,7 +84,7 @@ def evaluation_hook(genomes, config, env):
         history = agent.play_episode(temperature=1.0)
         
         total_reward = sum(history["rewards"])
-        genome.fitness = total_reward if total_reward > 0 else 0.1
+        genome.fitness = total_reward if total_reward > 0 else 0.001
 
 if __name__ == "__main__":
     print("Compiled Outer Loop framework mapping multi-output PyTorch-NEAT CPPNs successfully.")

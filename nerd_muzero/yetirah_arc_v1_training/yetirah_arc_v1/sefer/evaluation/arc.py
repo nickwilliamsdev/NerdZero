@@ -93,6 +93,7 @@ def evaluate_arc(model, dataset, limit: int = 64, device=None) -> Dict[str, Any]
     direct_exact = direct_pixel_sum = direct_shape_sum = 0.0
     n = 0
     action_counter = Counter()
+    program_length_sum = 0.0
 
     for task_id, demos, qx, target in dataset.evaluation_episodes(limit=limit):
         pred, actions, direct_pred = predict_arc(
@@ -107,6 +108,7 @@ def evaluate_arc(model, dataset, limit: int = 64, device=None) -> Dict[str, Any]
         direct_pixel_sum += dp
         direct_shape_sum += ds
         action_counter.update(actions)
+        program_length_sum += sum(int(a != model.cfg.operator_count) for a in actions)
         n += 1
 
     if was_training:
@@ -121,4 +123,5 @@ def evaluate_arc(model, dataset, limit: int = 64, device=None) -> Dict[str, Any]
         "direct_pixel_acc": direct_pixel_sum / denom,
         "direct_shape_acc": direct_shape_sum / denom,
         "action_usage": dict(action_counter),
+        "mean_program_length": program_length_sum / denom,
     }

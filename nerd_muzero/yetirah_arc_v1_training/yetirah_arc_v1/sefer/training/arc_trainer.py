@@ -147,7 +147,9 @@ def initialize_arc_from_v30(model: ARCReasoner, cfg) -> Dict[str, bool]:
 
 def _decode_loss(model, H, target, target_shape):
     c, h, w = model.decode_grid(H)
-    color_loss, stats = arc_grid_loss(c, h, w, target, target_shape)
+    color_loss, stats = arc_grid_loss(
+        c, h, w, target, target_shape, foreground_boost=model.cfg.foreground_boost
+    )
     return color_loss, stats["shape_loss"], stats
 
 
@@ -205,7 +207,10 @@ def train_arc_v1(cfg, train_data, val_data=None):
         grid, shape = train_data.sample_grid_batch(cfg.batch_size, device)
         H = model.encode_grid(grid, shape)
         color_logits, h_logits, w_logits = model.decode_grid(H)
-        color_loss, stats = arc_grid_loss(color_logits, h_logits, w_logits, grid, shape)
+        color_loss, stats = arc_grid_loss(
+            color_logits, h_logits, w_logits, grid, shape,
+            foreground_boost=cfg.foreground_boost,
+        )
         loss = color_loss + cfg.shape_weight * stats["shape_loss"]
         codec_opt.zero_grad(set_to_none=True)
         loss.backward()
@@ -215,6 +220,7 @@ def train_arc_v1(cfg, train_data, val_data=None):
             print(
                 f"arc codec step={step:04d} loss={loss.item():.4f} "
                 f"cellCE={color_loss.item():.4f} pixelAcc={stats['pixel_acc'].item():.3f} "
+                f"fgAcc={stats['foreground_acc'].item():.3f} bgAcc={stats['background_acc'].item():.3f} "
                 f"shapeAcc={stats['shape_acc'].item():.3f}"
             )
 
@@ -224,6 +230,8 @@ def train_arc_v1(cfg, train_data, val_data=None):
     direct_params = (
         list(model.grid_encoder.parameters())
         + list(model.grid_decoder.parameters())
+        + list(model.demo_slot_encoder.parameters())
+        + list(model.demo_slot_score.parameters())
         + list(model.demo_pair_encoder.parameters())
         + list(model.rule_encoder.parameters())
         + list(model.direct_rule_to_slots.parameters())
@@ -253,6 +261,7 @@ def train_arc_v1(cfg, train_data, val_data=None):
             print(
                 f"arc direct step={step:04d} loss={loss.item():.4f} "
                 f"cellCE={color_loss.item():.4f} pixelAcc={stats['pixel_acc'].item():.3f} "
+                f"fgAcc={stats['foreground_acc'].item():.3f} bgAcc={stats['background_acc'].item():.3f} "
                 f"shapeAcc={stats['shape_acc'].item():.3f}"
             )
 
@@ -309,7 +318,7 @@ def train_arc_v1(cfg, train_data, val_data=None):
             )
             last_stage = stage_idx
 
-        Hp, action_w, value_preds = model.rollout_program(
+        Hp, action_w, value_preds, trace = model.rollout_program(
             Hq,
             rule,
             goal_H=Hgoal,
@@ -318,6 +327,7 @@ def train_arc_v1(cfg, train_data, val_data=None):
             temperature=temp,
             hard=True,
             greedy=False,
+            return_trace=True,
         )
         latent_loss = (Hp - Ht).pow(2).mean()
         color_loss, shape_loss, stats = _decode_loss(model, Hp, batch.target_y, batch.target_shape)
@@ -328,6 +338,38 @@ def train_arc_v1(cfg, train_data, val_data=None):
             model, Hgoal, batch.target_y, batch.target_shape
         )
         direct_aux = direct_color + cfg.shape_weight * direct_shape
+
+        # Training-only target-aware policy teacher. At each visited state,
+        # choose the active operator that most improves true target-latent error;
+        # choose STOP only when no operator clears a small improvement margin.
+        # This directly addresses the v1.1 deep-stage STOP collapse without
+        # leaking the target at inference (the teacher is absent there).
+        oracle_losses = []
+        oracle_stop_fracs = []
+        for state_t, logits_t, halted_t in zip(
+            trace["states_before"], trace["logits"], trace["halted_before"]
+        ):
+            with torch.no_grad():
+                op_states = model.operator_bank.apply_all(state_t.detach())[:, :active_ops]
+                current_err = (state_t.detach() - Ht).pow(2).mean(dim=(1, 2))
+                op_err = (op_states - Ht[:, None]).pow(2).mean(dim=(2, 3))
+                best_err, best_idx = op_err.min(dim=1)
+                improvement = current_err - best_err
+                teacher = torch.where(
+                    improvement > cfg.oracle_improvement_margin,
+                    best_idx,
+                    torch.full_like(best_idx, cfg.operator_count),
+                )
+                was_halted = halted_t.squeeze(-1).squeeze(-1) > 0.5
+                teacher = torch.where(
+                    was_halted,
+                    torch.full_like(teacher, cfg.operator_count),
+                    teacher,
+                )
+                oracle_stop_fracs.append((teacher == cfg.operator_count).float().mean())
+            oracle_losses.append(F.cross_entropy(logits_t, teacher))
+        oracle_policy_loss = torch.stack(oracle_losses).mean()
+        oracle_stop_frac = torch.stack(oracle_stop_fracs).mean()
 
         non_stop = action_w[:, :, : cfg.operator_count].sum(dim=-1)
         length_loss = non_stop.mean()
@@ -358,6 +400,7 @@ def train_arc_v1(cfg, train_data, val_data=None):
             + cfg.operator_reg_weight * op_reg
             + cfg.usage_balance_weight * usage_balance_loss
             + cfg.value_weight * value_loss
+            + cfg.oracle_policy_weight * oracle_policy_loss
         )
 
         program_opt.zero_grad(set_to_none=True)
@@ -373,13 +416,17 @@ def train_arc_v1(cfg, train_data, val_data=None):
                     int(torch.unique(chosen[chosen < cfg.operator_count]).numel())
                     if (chosen < cfg.operator_count).any() else 0
                 )
+                program_len = (chosen != cfg.operator_count).float().sum(dim=1).mean()
             print(
                 f"arc program step={step:04d} loss={loss.item():.4f} "
                 f"latent={latent_loss.item():.4f} goalLat={goal_consistency_loss.item():.4f} "
                 f"cellCE={color_loss.item():.4f} pixelAcc={stats['pixel_acc'].item():.3f} "
+                f"fgAcc={stats['foreground_acc'].item():.3f} "
                 f"directPix={direct_stats['pixel_acc'].item():.3f} "
                 f"shapeAcc={stats['shape_acc'].item():.3f} stop={stop_frac.item():.3f} "
-                f"usedOps={op_unique}/{active_ops} depth={stage_depth} temp={temp:.3f}"
+                f"oracleCE={oracle_policy_loss.item():.3f} oracleStop={oracle_stop_frac.item():.3f} "
+                f"progLen={program_len.item():.2f} usedOps={op_unique}/{active_ops} "
+                f"depth={stage_depth} temp={temp:.3f}"
             )
 
         if val_data is not None and cfg.eval_every > 0 and step % cfg.eval_every == 0:
