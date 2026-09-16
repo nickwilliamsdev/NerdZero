@@ -12,7 +12,7 @@ from sefer.representation.arc_grid import ARCGridEncoder, ARCGridDecoder
 
 
 class ARCReasoner(nn.Module):
-    """ARC-v1.2 reasoner over the 32-node Yetirah substrate.
+    """ARC-v1.3 reasoner over the 32-node Yetirah substrate.
 
     Demonstrations -> rule embedding.
     Query grid -> current latent substrate H.
@@ -192,15 +192,25 @@ class ARCReasoner(nn.Module):
         step: int,
         max_steps: int,
         active_operator_count: int | None = None,
+        active_operator_indices: torch.Tensor | None = None,
     ):
         feat = self._program_features(H, goal_H, rule, step, max_steps)
         logits = self.arc_program_controller(feat)
-        active = self.operator_count if active_operator_count is None else int(active_operator_count)
-        active = max(1, min(active, self.operator_count))
-        if active < self.operator_count:
-            # STOP remains available; only inactive operator logits are masked.
+        if active_operator_indices is not None:
+            idx = active_operator_indices.to(device=logits.device, dtype=torch.long)
+            keep = torch.zeros(self.operator_count, device=logits.device, dtype=torch.bool)
+            keep[idx] = True
             logits = logits.clone()
-            logits[:, active:self.operator_count] = torch.finfo(logits.dtype).min
+            logits[:, :self.operator_count] = logits[:, :self.operator_count].masked_fill(
+                ~keep[None], torch.finfo(logits.dtype).min
+            )
+        else:
+            active = self.operator_count if active_operator_count is None else int(active_operator_count)
+            active = max(1, min(active, self.operator_count))
+            if active < self.operator_count:
+                # STOP remains available; only inactive operator logits are masked.
+                logits = logits.clone()
+                logits[:, active:self.operator_count] = torch.finfo(logits.dtype).min
         return logits, self.arc_program_value(feat).squeeze(-1)
 
     @torch.no_grad()
@@ -228,6 +238,7 @@ class ARCReasoner(nn.Module):
         goal_H: torch.Tensor | None = None,
         max_steps: int | None = None,
         active_operator_count: int | None = None,
+        active_operator_indices: torch.Tensor | None = None,
         temperature: float = 1.0,
         hard: bool = True,
         greedy: bool = False,
@@ -247,7 +258,9 @@ class ARCReasoner(nn.Module):
         trace_halted: List[torch.Tensor] = []
         for t in range(steps):
             logits, value = self.program_policy_value(
-                H, goal_H, rule, t, steps, active_operator_count=active_operator_count
+                H, goal_H, rule, t, steps,
+                active_operator_count=active_operator_count,
+                active_operator_indices=active_operator_indices,
             )
             if return_trace:
                 trace_states.append(H)
@@ -289,6 +302,7 @@ class ARCReasoner(nn.Module):
         goal_H: torch.Tensor | None = None,
         max_steps: int | None = None,
         active_operator_count: int | None = None,
+        active_operator_indices: torch.Tensor | None = None,
     ):
         if goal_H is None:
             goal_H = self.predict_goal(H0, rule)
@@ -298,6 +312,7 @@ class ARCReasoner(nn.Module):
             goal_H=goal_H,
             max_steps=max_steps,
             active_operator_count=active_operator_count,
+            active_operator_indices=active_operator_indices,
             greedy=True,
         )
         return H, weights.argmax(dim=-1)

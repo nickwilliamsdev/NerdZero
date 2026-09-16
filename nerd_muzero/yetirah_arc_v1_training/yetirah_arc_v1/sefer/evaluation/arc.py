@@ -84,6 +84,42 @@ def predict_arc(model, demos, query_x, device=None, return_direct: bool = False)
 
 
 @torch.no_grad()
+def evaluate_arc_direct(model, dataset, limit: int = 64, device=None) -> Dict[str, Any]:
+    """Evaluate only the demo-conditioned predicted-goal path.
+
+    Used during Phase B so we can preserve the best task-inference model before
+    operator discovery/program learning begins.
+    """
+    device = device or next(model.parameters()).device
+    was_training = model.training
+    model.eval()
+    exact = pixel_sum = shape_sum = 0.0
+    n = 0
+    for task_id, demos, qx, target in dataset.evaluation_episodes(limit=limit):
+        dx, dy, dxs, dys, dm, q, qs = _episode_tensors(
+            demos, qx, model.cfg.max_demos, model.cfg.max_grid_size, device
+        )
+        rule = model.encode_rule(dx, dy, dxs, dys, dm)
+        Hq = model.encode_grid(q, qs)
+        Hgoal = model.predict_goal(Hq, rule)
+        pred = _decode_grid(model, Hgoal)
+        e, p, sh = _grid_scores(pred, target)
+        exact += e
+        pixel_sum += p
+        shape_sum += sh
+        n += 1
+    if was_training:
+        model.train()
+    denom = max(n, 1)
+    return {
+        "count": n,
+        "exact": exact / denom,
+        "pixel_acc": pixel_sum / denom,
+        "shape_acc": shape_sum / denom,
+    }
+
+
+@torch.no_grad()
 def evaluate_arc(model, dataset, limit: int = 64, device=None) -> Dict[str, Any]:
     device = device or next(model.parameters()).device
     was_training = model.training

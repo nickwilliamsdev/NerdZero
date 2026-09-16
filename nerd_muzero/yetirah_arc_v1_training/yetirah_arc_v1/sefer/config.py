@@ -46,13 +46,14 @@ class V30DGXConfig(V30Config):
 
 @dataclass
 class ARCConfig:
-    """ARC-v1.2 meta-learning defaults.
+    """ARC-v1.3 meta-learning defaults.
 
-    Changes from the initial ARC-v1 run:
-      * robust v30 checkpoint discovery
-      * demo-conditioned predicted latent goal used by program control
-      * staged active-operator/program-depth curriculum
-      * gentler Gumbel cooling while the ARC operator vocabulary forms
+    v1.3 keeps the v30 prior and adds:
+      * blended raw/balanced grid reconstruction
+      * best-direct checkpoint restore before operator learning
+      * a dedicated ARC operator-discovery warmup
+      * frozen task inference during program composition
+      * automatic restore of the best validation checkpoint at the end
     """
 
     seed: int = 0
@@ -79,6 +80,7 @@ class ARCConfig:
     # Three-stage curriculum.
     codec_steps: int = 1500
     direct_steps: int = 1500
+    operator_discovery_steps: int = 1500
     program_steps: int = 4000
     diagnostic_every: int = 50
     eval_every: int = 500
@@ -87,7 +89,8 @@ class ARCConfig:
     codec_lr: float = 3e-4
     direct_lr: float = 3e-4
     program_lr: float = 3e-4
-    operator_lr: float = 1e-4
+    operator_discovery_lr: float = 2e-4
+    operator_lr: float = 5e-5
     weight_decay: float = 1e-4
     grad_clip: float = 1.0
     matmul_precision: str = "high"
@@ -103,7 +106,17 @@ class ARCConfig:
     usage_balance_weight: float = 0.001
     value_weight: float = 0.10
     oracle_policy_weight: float = 0.35
-    oracle_improvement_margin: float = 0.002
+    oracle_improvement_margin: float = 0.001
+
+    # Operator-discovery warmup.  All 22 residual operators compete to explain
+    # real ARC input->output latent transitions before the controller learns
+    # compositions.  Softmin gives every useful candidate gradient while the
+    # load-balancing term discourages collapse to one operator.
+    operator_discovery_temp_start: float = 0.20
+    operator_discovery_temp_end: float = 0.04
+    operator_discovery_grid_weight: float = 0.35
+    operator_discovery_usage_weight: float = 0.02
+    operator_discovery_reg_weight: float = 0.01
     gumbel_temp_start: float = 1.50
     gumbel_temp_end: float = 0.75
 
@@ -119,11 +132,12 @@ class ARCConfig:
     attention_heads: int = 4
     codec_dropout: float = 0.0
     codec_latent_layers: int = 2
-    foreground_boost: float = 1.5
+    foreground_boost: float = 1.25
+    color_balance_mix: float = 0.35
 
     # Adaptive operator residual around the frozen v30 algebra.
-    operator_residual_rank: int = 4
-    operator_residual_scale: float = 0.35
+    operator_residual_rank: int = 8
+    operator_residual_scale: float = 0.50
     feature_residual_scale: float = 0.10
 
     # Initialize from validated synthetic geometry when files are available.
@@ -136,3 +150,4 @@ class ARCConfig:
     # Checkpoints.
     arc_checkpoint_path: str = "yetirah_arc_v1.pt"
     arc_best_checkpoint_path: str = "yetirah_arc_v1_best.pt"
+    restore_best_at_end: bool = True

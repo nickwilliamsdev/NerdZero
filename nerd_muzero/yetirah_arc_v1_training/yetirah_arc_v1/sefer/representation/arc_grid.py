@@ -181,14 +181,14 @@ def arc_grid_loss(
     width_logits: torch.Tensor,
     target: torch.Tensor,
     target_shapes: torch.Tensor,
-    foreground_boost: float = 1.5,
+    foreground_boost: float = 1.25,
+    balance_mix: float = 0.35,
 ) -> Tuple[torch.Tensor, dict]:
-    """Frequency-balanced masked cell CE + output-shape CE.
+    """Blend plain masked CE with a foreground/color-balanced CE.
 
-    ARC grids are frequently dominated by color 0. A plain mean CE can obtain a
-    deceptively good pixel score by focusing on background, so v1.2 balances
-    colors by inverse-sqrt batch frequency and gives non-zero cells a modest
-    additional weight. Raw/foreground/background accuracies are all reported.
+    v1.2 used only the balanced objective.  That improved foreground accuracy
+    but damaged basic reconstruction.  v1.3 keeps ordinary pixel fidelity as
+    the primary objective and mixes in a smaller balanced term.
     """
     max_size = target.shape[-1]
     mask = shape_mask(target_shapes, max_size)
@@ -209,8 +209,12 @@ def arc_grid_loss(
             torch.as_tensor(foreground_boost, device=target.device, dtype=cell_w.dtype),
             torch.ones((), device=target.device, dtype=cell_w.dtype),
         )
-    weighted_mask = mask.float() * cell_w
-    color_loss = (per_cell * weighted_mask).sum() / weighted_mask.sum().clamp_min(1.0)
+    raw_mask = mask.float()
+    raw_color_loss = (per_cell * raw_mask).sum() / raw_mask.sum().clamp_min(1.0)
+    weighted_mask = raw_mask * cell_w
+    balanced_color_loss = (per_cell * weighted_mask).sum() / weighted_mask.sum().clamp_min(1.0)
+    mix = float(max(0.0, min(1.0, balance_mix)))
+    color_loss = (1.0 - mix) * raw_color_loss + mix * balanced_color_loss
 
     h_loss = F.cross_entropy(height_logits, (target_shapes[:, 0] - 1).long())
     w_loss = F.cross_entropy(width_logits, (target_shapes[:, 1] - 1).long())
@@ -229,6 +233,8 @@ def arc_grid_loss(
         )
     return color_loss, {
         "color_loss": color_loss.detach(),
+        "raw_color_loss": raw_color_loss.detach(),
+        "balanced_color_loss": balanced_color_loss.detach(),
         "shape_loss": shape_loss,
         "pixel_acc": pixel_acc,
         "foreground_acc": foreground_acc,
