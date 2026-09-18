@@ -7,7 +7,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from sefer.algebra.core import YetirahCore
-from sefer.algebra.adaptive_operator_bank import AdaptiveOperatorBank
+from sefer.algebra.fast_operator_bank import TaskConditionedFastOperatorBank
 from sefer.representation.arc_grid import ARCGridEncoder, ARCGridDecoder
 
 
@@ -112,7 +112,22 @@ class ARCReasoner(nn.Module):
             nn.Linear(128, 1),
             nn.Sigmoid(),
         )
-        self.operator_bank: AdaptiveOperatorBank | None = None
+
+        # Safe residual selector. The direct predicted goal is always available
+        # at inference, so the operator program only needs to contribute when
+        # its task-conditioned computation is useful. A negative initial bias
+        # starts near the direct solution and learns a per-example residual mix.
+        blend_in = (3 * flat_dim) + cfg.rule_dim + (2 * cfg.node_dim)
+        self.program_blend = nn.Sequential(
+            nn.LayerNorm(blend_in),
+            nn.Linear(blend_in, 256),
+            nn.GELU(),
+            nn.Linear(256, 64),
+            nn.GELU(),
+            nn.Linear(64, 1),
+        )
+        nn.init.constant_(self.program_blend[-1].bias, cfg.program_blend_init)
+        self.operator_bank: TaskConditionedFastOperatorBank | None = None
 
     def encode_grid(self, grid: torch.Tensor, shapes: torch.Tensor) -> torch.Tensor:
         return self.grid_encoder(grid, shapes)
@@ -184,6 +199,27 @@ class ARCReasoner(nn.Module):
             rem_frac,
         ], dim=-1)
 
+
+    def blend_program_result(
+        self,
+        H0: torch.Tensor,
+        goal_H: torch.Tensor,
+        program_H: torch.Tensor,
+        rule: torch.Tensor,
+    ):
+        pooled_prog = (program_H - goal_H).mean(dim=1)
+        pooled_start = (H0 - goal_H).mean(dim=1)
+        feat = torch.cat([
+            H0.flatten(1),
+            goal_H.flatten(1),
+            program_H.flatten(1),
+            rule,
+            pooled_start,
+            pooled_prog,
+        ], dim=-1)
+        gate = torch.sigmoid(self.program_blend(feat)).view(H0.shape[0], 1, 1)
+        return goal_H + gate * (program_H - goal_H), gate
+
     def program_policy_value(
         self,
         H: torch.Tensor,
@@ -216,13 +252,21 @@ class ARCReasoner(nn.Module):
     @torch.no_grad()
     def install_base_operator_bank_from_core(self):
         self.core.materialize_operator_bank()
-        self.operator_bank = AdaptiveOperatorBank(
+        self.operator_bank = TaskConditionedFastOperatorBank(
             self.core._transport_bank.detach().clone(),
             self.core._scale_bank.detach().clone(),
             self.core._bias_bank.detach().clone(),
-            rank=self.cfg.operator_residual_rank,
-            transport_residual_scale=self.cfg.operator_residual_scale,
-            feature_residual_scale=self.cfg.feature_residual_scale,
+            rule_dim=self.cfg.rule_dim,
+            operator_code_dim=self.cfg.fast_operator_code_dim,
+            rank=self.cfg.fast_operator_rank,
+            static_rank=self.cfg.fast_operator_static_rank,
+            hidden_dim=self.cfg.fast_operator_hidden_dim,
+            transport_delta_scale=self.cfg.fast_transport_delta_scale,
+            static_delta_scale=self.cfg.fast_static_delta_scale,
+            feature_delta_scale=self.cfg.fast_feature_delta_scale,
+            delta_gate_init=self.cfg.fast_gate_init,
+            gate_max=self.cfg.fast_gate_max,
+            delta_rms_cap=self.cfg.fast_delta_rms_cap,
         ).to(self.core.coords.device)
         for p in self.core.parameters():
             p.requires_grad_(False)
@@ -247,6 +291,7 @@ class ARCReasoner(nn.Module):
         self.ensure_operator_bank()
         steps = max_steps or self.cfg.max_program_steps
         H = H0
+        H_start = H0
         if goal_H is None:
             goal_H = self.predict_goal(H0, rule)
 
@@ -277,7 +322,7 @@ class ARCReasoner(nn.Module):
             stop_only[:, self.stop_action] = 1.0
             w_eff = active * w + (1.0 - active) * stop_only
 
-            all_ops = self.operator_bank.apply_all(H)
+            all_ops = self.operator_bank.apply_all(H, rule)
             op_state = (all_ops * w_eff[:, : self.operator_count, None, None]).sum(dim=1)
             stop_w = w_eff[:, self.stop_action:self.stop_action + 1, None]
             candidate = op_state + stop_w * H
@@ -285,6 +330,8 @@ class ARCReasoner(nn.Module):
             halted = halted + (1.0 - halted) * stop_w
             action_weights.append(w_eff)
             value_preds.append(value)
+        raw_H = H
+        H, blend_gate = self.blend_program_result(H_start, goal_H, raw_H, rule)
         base = (H, torch.stack(action_weights, dim=1), value_preds)
         if not return_trace:
             return base
@@ -292,6 +339,8 @@ class ARCReasoner(nn.Module):
             "states_before": trace_states,
             "logits": trace_logits,
             "halted_before": trace_halted,
+            "raw_final": raw_H,
+            "blend_gate": blend_gate,
         },)
 
     @torch.no_grad()

@@ -48,7 +48,7 @@ def run_experiment():
         
     print(f"Beginning evolution across {config.pop_size} genomes per generation.")
     # Run evolution
-    winner = p.run(eval_genomes, n=100)  # Limited to 2 generations for testing
+    winner = p.run(eval_genomes, n=200)  # Limited to 2 generations for testing
     
     print("\nBest genome found:")
     print(winner)

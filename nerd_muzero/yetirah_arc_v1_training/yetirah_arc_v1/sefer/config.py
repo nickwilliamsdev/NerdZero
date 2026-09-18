@@ -21,7 +21,7 @@ class V30Config:
     neat_generations: int = 100
     neat_population: int = 256
     neat_workers: int = 12
-    neat_inner_steps: int = 55
+    neat_inner_steps: int = 32
     neat_inner_lr: float = 1e-2
     neat_seed: int = 0
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
@@ -46,7 +46,7 @@ class V30DGXConfig(V30Config):
 
 @dataclass
 class ARCConfig:
-    """ARC-v1.3 meta-learning defaults.
+    """ARC-v1.4 meta-learning defaults.
 
     v1.3 keeps the v30 prior and adds:
       * blended raw/balanced grid reconstruction
@@ -54,6 +54,7 @@ class ARCConfig:
       * a dedicated ARC operator-discovery warmup
       * frozen task inference during program composition
       * automatic restore of the best validation checkpoint at the end
+      * task-conditioned CPPN-initialized fast operator networks
     """
 
     seed: int = 0
@@ -90,7 +91,7 @@ class ARCConfig:
     direct_lr: float = 3e-4
     program_lr: float = 3e-4
     operator_discovery_lr: float = 2e-4
-    operator_lr: float = 5e-5
+    operator_lr: float = 1e-5
     weight_decay: float = 1e-4
     grad_clip: float = 1.0
     matmul_precision: str = "high"
@@ -117,6 +118,8 @@ class ARCConfig:
     operator_discovery_grid_weight: float = 0.35
     operator_discovery_usage_weight: float = 0.02
     operator_discovery_reg_weight: float = 0.01
+    operator_discovery_trust_weight: float = 0.03
+    operator_discovery_val_batches: int = 4
     gumbel_temp_start: float = 1.50
     gumbel_temp_end: float = 0.75
 
@@ -135,7 +138,28 @@ class ARCConfig:
     foreground_boost: float = 1.25
     color_balance_mix: float = 0.35
 
-    # Adaptive operator residual around the frozen v30 algebra.
+    # Task-conditioned fast operator network around the frozen v30/CPPN algebra.
+    # The CPPN-generated transports become W0; a rule+operator hypernetwork emits
+    # low-rank task-local fast weights. A smaller static residual remains as a
+    # trainable ARC-wide correction.
+    fast_operator_rank: int = 8
+    fast_operator_static_rank: int = 4
+    fast_operator_code_dim: int = 16
+    fast_operator_hidden_dim: int = 192
+    fast_transport_delta_scale: float = 0.35
+    fast_static_delta_scale: float = 0.15
+    fast_feature_delta_scale: float = 0.08
+    fast_gate_init: float = -1.0
+    fast_gate_max: float = 0.50
+    fast_delta_rms_cap: float = 1.0
+    fast_transport_kl_weight: float = 0.02
+    fast_gate_penalty_weight: float = 0.005
+
+    # Safe program residual: the direct predicted goal remains an inference-time
+    # fallback. The program learns only a gated residual around that prediction.
+    program_blend_init: float = -1.5
+
+    # Legacy aliases retained so older launcher/config code does not break.
     operator_residual_rank: int = 8
     operator_residual_scale: float = 0.50
     feature_residual_scale: float = 0.10
