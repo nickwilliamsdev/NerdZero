@@ -1,4 +1,7 @@
+
 from __future__ import annotations
+
+ARC_TRAINER_PATCH_ID = "v1.8-arc-neat-outer-loop"
 
 import copy
 import math
@@ -14,6 +17,7 @@ from sefer.controllers.arc_reasoner import ARCReasoner
 from sefer.evolution.evolve_transport import load_evolved_transport_cppn
 from sefer.representation.arc_grid import arc_grid_loss
 from sefer.evaluation.arc import evaluate_arc, evaluate_arc_direct
+from sefer.evolution.arc_neat_outer import evolve_arc_cppn
 
 
 def set_seed(seed: int):
@@ -179,6 +183,58 @@ def _program_stage(cfg, step: int) -> Tuple[int, int, int]:
 
 
 @torch.no_grad()
+def _beam_teacher_actions(model, state, rule, target, active_indices, lookahead: int, width: int):
+    """Training-only shallow lookahead teacher.
+
+    Returns the first action of the best program found within ``lookahead``
+    operator applications. STOP is represented by keeping the current state.
+    The target latent is used only to construct this supervision target.
+    """
+    B, N, D = state.shape
+    device = state.device
+    stop = model.cfg.operator_count
+    active_indices = active_indices.to(device=device, dtype=torch.long)
+    A = int(active_indices.numel())
+    width = max(int(width), 1)
+    lookahead = max(int(lookahead), 1)
+
+    # Global best includes immediate STOP.
+    best_score = (state - target).pow(2).mean(dim=(1, 2))
+    best_first = torch.full((B,), stop, device=device, dtype=torch.long)
+
+    frontier = state[:, None]  # [B,K,N,D]
+    first = torch.full((B, 1), stop, device=device, dtype=torch.long)
+    for depth in range(lookahead):
+        K = frontier.shape[1]
+        flat_state = frontier.reshape(B * K, N, D)
+        flat_rule = rule[:, None].expand(B, K, rule.shape[-1]).reshape(B * K, -1)
+        all_ops = model.operator_bank.apply_all(flat_state, flat_rule)[:, active_indices]
+        cand = all_ops.reshape(B, K * A, N, D)
+        score = (cand - target[:, None]).pow(2).mean(dim=(2, 3))
+
+        if depth == 0:
+            cand_first = active_indices[None, :].expand(B, A)
+        else:
+            cand_first = first[:, :, None].expand(B, K, A).reshape(B, K * A)
+
+        flat_score = score
+        flat_first = cand_first
+        better_score, better_idx = flat_score.min(dim=1)
+        better_first = flat_first.gather(1, better_idx[:, None]).squeeze(1)
+        improve = better_score < best_score
+        best_score = torch.where(improve, better_score, best_score)
+        best_first = torch.where(improve, better_first, best_first)
+
+        kkeep = min(width, flat_score.shape[1])
+        _, top_idx = torch.topk(flat_score, k=kkeep, largest=False, dim=1)
+        gather_idx = top_idx[:, :, None, None].expand(B, kkeep, N, D)
+        frontier = cand.gather(1, gather_idx)
+        first = flat_first.gather(1, top_idx)
+
+    return best_first
+
+
+@torch.no_grad()
 def _evaluate_operator_discovery(model, data, cfg, device):
     if data is None:
         return None
@@ -193,6 +249,7 @@ def _evaluate_operator_discovery(model, data, cfg, device):
             batch.demos_x_shapes, batch.demos_y_shapes, batch.demo_mask,
         )
         Hq = model.encode_grid(batch.query_x, batch.query_shape)
+        rule = model.condition_rule_on_query(rule, Hq)
         Ht = model.encode_grid(batch.target_y, batch.target_shape)
         all_states = model.operator_bank.apply_all(Hq, rule)
         per_op_err = (all_states - Ht[:, None]).pow(2).mean(dim=(2, 3))
@@ -224,6 +281,7 @@ def _rank_discovered_operators(model, data, cfg, device):
             batch.demos_x_shapes, batch.demos_y_shapes, batch.demo_mask,
         )
         Hq = model.encode_grid(batch.query_x, batch.query_shape)
+        rule = model.condition_rule_on_query(rule, Hq)
         Ht = model.encode_grid(batch.target_y, batch.target_shape)
         all_states = model.operator_bank.apply_all(Hq, rule)
         err = (all_states - Ht[:, None]).pow(2).mean(dim=(2, 3))
@@ -232,11 +290,48 @@ def _rank_discovered_operators(model, data, cfg, device):
     return torch.argsort(usage, descending=True)
 
 
+def _verify_v16_runtime(model, cfg):
+    """Fail fast if the query-conditioned/beam patch was not loaded."""
+    required_cfg = (
+        "beam_teacher_weight", "beam_teacher_width", "beam_teacher_lookahead",
+        "demo_search_enabled", "demo_search_beam_width", "demo_search_depth",
+        "arc_neat_enabled", "arc_neat_generations", "arc_neat_population"
+    )
+    missing_cfg = [name for name in required_cfg if not hasattr(cfg, name)]
+    if missing_cfg:
+        raise RuntimeError(
+            "ARC-v1.8 runtime verification failed: config is missing "
+            + ", ".join(missing_cfg)
+            + ". An older sefer/config.py is being imported."
+        )
+    if not hasattr(model, "condition_rule_on_query"):
+        raise RuntimeError(
+            "ARC-v1.8 runtime verification failed: ARCReasoner has no "
+            "condition_rule_on_query(). An older arc_reasoner.py is being imported."
+        )
+    if "_beam_teacher_actions" not in globals():
+        raise RuntimeError(
+            "ARC-v1.8 runtime verification failed: beam teacher is unavailable. "
+            "An older arc_trainer.py is being imported."
+        )
+    print(
+        "ARC-v1 patch=v1.8-arc-neat-outer-loop "
+        f"queryConditioning=True beamTeacher=True demoSearch={cfg.demo_search_enabled} "
+        f"beamWidth={cfg.beam_teacher_width} "
+        f"beamLookahead={cfg.beam_teacher_lookahead} "
+        f"beamWeight={cfg.beam_teacher_weight:.3f} "
+        f"arcNeat={cfg.arc_neat_enabled} arcNeatGen={cfg.arc_neat_generations} "
+        f"arcNeatPop={cfg.arc_neat_population}"
+    )
+    print(f"ARC-v1 trainer source: {Path(__file__).resolve()}")
+
+
 def train_arc_v1(cfg, train_data, val_data=None):
     set_seed(cfg.seed)
     torch.set_float32_matmul_precision(cfg.matmul_precision)
     device = torch.device(cfg.device)
     model = ARCReasoner(cfg).to(device)
+    _verify_v16_runtime(model, cfg)
     initialize_arc_from_v30(model, cfg)
 
     print(f"ARC-v1 device={device}")
@@ -292,6 +387,10 @@ def train_arc_v1(cfg, train_data, val_data=None):
         + list(model.demo_slot_score.parameters())
         + list(model.demo_pair_encoder.parameters())
         + list(model.rule_encoder.parameters())
+        + list(model.query_slot_proj.parameters())
+        + list(model.query_rule_query.parameters())
+        + list(model.query_rule_refiner.parameters())
+        + list(model.query_rule_norm.parameters())
         + list(model.direct_rule_to_slots.parameters())
         + list(model.direct_norm.parameters())
     )
@@ -306,6 +405,7 @@ def train_arc_v1(cfg, train_data, val_data=None):
             batch.demos_x_shapes, batch.demos_y_shapes, batch.demo_mask,
         )
         Hq = model.encode_grid(batch.query_x, batch.query_shape)
+        rule = model.condition_rule_on_query(rule, Hq)
         Hg = model.predict_goal(Hq, rule)
         color_loss, shape_loss, stats = _decode_loss(model, Hg, batch.target_y, batch.target_shape)
 
@@ -350,6 +450,10 @@ def train_arc_v1(cfg, train_data, val_data=None):
     _set_requires_grad(model.demo_slot_score, False)
     _set_requires_grad(model.demo_pair_encoder, False)
     _set_requires_grad(model.rule_encoder, False)
+    _set_requires_grad(model.query_slot_proj, False)
+    _set_requires_grad(model.query_rule_query, False)
+    _set_requires_grad(model.query_rule_refiner, False)
+    _set_requires_grad(model.query_rule_norm, False)
     _set_requires_grad(model.direct_rule_to_slots, False)
     _set_requires_grad(model.direct_norm, False)
     for p in model.core.parameters():
@@ -372,6 +476,7 @@ def train_arc_v1(cfg, train_data, val_data=None):
                 batch.demos_x_shapes, batch.demos_y_shapes, batch.demo_mask,
             )
             Hq = model.encode_grid(batch.query_x, batch.query_shape)
+            rule = model.condition_rule_on_query(rule, Hq)
             Ht = model.encode_grid(batch.target_y, batch.target_shape)
         all_states = model.operator_bank.apply_all(Hq, rule)
         per_op_err = (all_states - Ht[:, None]).pow(2).mean(dim=(2, 3))
@@ -483,6 +588,7 @@ def train_arc_v1(cfg, train_data, val_data=None):
         with torch.no_grad():
             Hq = model.encode_grid(batch.query_x, batch.query_shape)
             Ht = model.encode_grid(batch.target_y, batch.target_shape)
+        rule = model.condition_rule_on_query(rule, Hq)
 
         # Crucially, this goal is available at inference: demos + query only.
         Hgoal = model.predict_goal(Hq, rule)
@@ -554,6 +660,31 @@ def train_arc_v1(cfg, train_data, val_data=None):
         oracle_policy_loss = torch.stack(oracle_losses).mean()
         oracle_stop_frac = torch.stack(oracle_stop_fracs).mean()
 
+        # Composition-aware teacher: for each visited state, search a shallow
+        # beam of short operator programs and supervise the first action of the
+        # best reachable program. This avoids teaching purely myopic moves.
+        beam_losses = []
+        beam_stop_fracs = []
+        for t, (state_t, logits_t, halted_t) in enumerate(zip(
+            trace["states_before"], trace["logits"], trace["halted_before"]
+        )):
+            remaining = max(stage_depth - t, 1)
+            lookahead = min(int(cfg.beam_teacher_lookahead), remaining)
+            teacher = _beam_teacher_actions(
+                model, state_t.detach(), rule.detach(), Ht, active_indices,
+                lookahead=lookahead, width=cfg.beam_teacher_width,
+            )
+            was_halted = halted_t.squeeze(-1).squeeze(-1) > 0.5
+            teacher = torch.where(
+                was_halted,
+                torch.full_like(teacher, cfg.operator_count),
+                teacher,
+            )
+            beam_losses.append(F.cross_entropy(logits_t, teacher))
+            beam_stop_fracs.append((teacher == cfg.operator_count).float().mean())
+        beam_policy_loss = torch.stack(beam_losses).mean()
+        beam_stop_frac = torch.stack(beam_stop_fracs).mean()
+
         non_stop = action_w[:, :, : cfg.operator_count].sum(dim=-1)
         length_loss = non_stop.mean()
 
@@ -587,6 +718,7 @@ def train_arc_v1(cfg, train_data, val_data=None):
             + cfg.usage_balance_weight * usage_balance_loss
             + cfg.value_weight * value_loss
             + cfg.oracle_policy_weight * oracle_policy_loss
+            + cfg.beam_teacher_weight * beam_policy_loss
             + fast_trust_loss
         )
 
@@ -614,6 +746,7 @@ def train_arc_v1(cfg, train_data, val_data=None):
                 f"directPix={direct_stats['pixel_acc'].item():.3f} "
                 f"shapeAcc={stats['shape_acc'].item():.3f} stop={stop_frac.item():.3f} "
                 f"oracleCE={oracle_policy_loss.item():.3f} oracleStop={oracle_stop_frac.item():.3f} "
+                f"beamCE={beam_policy_loss.item():.3f} beamStop={beam_stop_frac.item():.3f} "
                 f"progLen={program_len.item():.2f} usedOps={op_unique}/{active_ops} "
                 f"blend={blend_mean.item():.3f} fastGate={fast_diag['fast_gate'].item():.3f} "
                 f"fastKL={fast_diag['transport_kl'].item():.4f} "
@@ -626,6 +759,8 @@ def train_arc_v1(cfg, train_data, val_data=None):
             print(
                 f"arc val step={step:04d} exact={metrics['exact']:.3f} "
                 f"pixel={metrics['pixel_acc']:.3f} shape={metrics['shape_acc']:.3f} "
+                f"greedyPixel={metrics.get('greedy_pixel_acc', metrics['pixel_acc']):.3f} "
+                f"demoFit={metrics.get('search_demo_fit', 0.0):.3f} "
                 f"directPixel={metrics['direct_pixel_acc']:.3f} "
                 f"directShape={metrics['direct_shape_acc']:.3f}"
             )
@@ -643,6 +778,18 @@ def train_arc_v1(cfg, train_data, val_data=None):
         model.load_state_dict(best_program_state, strict=True)
         print(f"ARC-v1 restored best program checkpoint from step={best_program_step}")
 
+    # v1.8: once the reusable ARC machinery is trained and stabilized, evolve
+    # only the CPPN-derived base geometry against held-out ARC meta-episodes.
+    # This is Baldwinian in the first experiment: no per-genome gradient update.
+    if getattr(cfg, "arc_neat_enabled", False) and int(getattr(cfg, "arc_neat_generations", 0)) > 0:
+        neat_result = evolve_arc_cppn(model, val_data, cfg, device)
+        if neat_result is not None:
+            print(
+                f"ARC-v1 ARC-NEAT outer loop complete fitness={neat_result['fitness']:.4f} "
+                f"pixel={neat_result['metrics']['pixel_acc']:.3f} "
+                f"demoFit={neat_result['metrics'].get('search_demo_fit', 0.0):.3f}"
+            )
+
     final_metrics = evaluate_arc(model, val_data or train_data, limit=cfg.eval_tasks, device=device)
     torch.save(
         {"model_state_dict": model.state_dict(), "cfg": vars(cfg), "metrics": final_metrics},
@@ -651,7 +798,10 @@ def train_arc_v1(cfg, train_data, val_data=None):
     print(f"saved ARC-v1 checkpoint: {cfg.arc_checkpoint_path}")
     print(
         f"ARC-v1 final exact={final_metrics['exact']:.3f} pixel={final_metrics['pixel_acc']:.3f} "
-        f"shape={final_metrics['shape_acc']:.3f} directPixel={final_metrics['direct_pixel_acc']:.3f}"
+        f"shape={final_metrics['shape_acc']:.3f} "
+        f"greedyPixel={final_metrics.get('greedy_pixel_acc', final_metrics['pixel_acc']):.3f} "
+        f"demoFit={final_metrics.get('search_demo_fit', 0.0):.3f} "
+        f"directPixel={final_metrics['direct_pixel_acc']:.3f}"
     )
     return model, final_metrics
 

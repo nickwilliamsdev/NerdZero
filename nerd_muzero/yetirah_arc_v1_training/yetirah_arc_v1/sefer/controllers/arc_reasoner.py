@@ -1,4 +1,7 @@
+
 from __future__ import annotations
+
+ARC_REASONER_PATCH_ID = "v1.8-refreshable-cppn-base"
 
 from typing import List, Tuple
 
@@ -83,6 +86,23 @@ class ARCReasoner(nn.Module):
             nn.Linear(cfg.rule_dim * 2, cfg.rule_dim),
         )
 
+        # Query-conditioned rule refinement. Demonstrations define the base rule,
+        # while the actual query selects which parts of that rule are relevant
+        # for this episode. This stays target-free and is available at inference.
+        self.query_slot_proj = nn.Sequential(
+            nn.LayerNorm(cfg.node_dim),
+            nn.Linear(cfg.node_dim, cfg.rule_dim),
+            nn.GELU(),
+        )
+        self.query_rule_query = nn.Linear(cfg.rule_dim, cfg.rule_dim)
+        self.query_rule_refiner = nn.Sequential(
+            nn.LayerNorm(cfg.rule_dim * 2),
+            nn.Linear(cfg.rule_dim * 2, cfg.rule_dim * 2),
+            nn.GELU(),
+            nn.Linear(cfg.rule_dim * 2, cfg.rule_dim),
+        )
+        self.query_rule_norm = nn.LayerNorm(cfg.rule_dim)
+
         flat_dim = cfg.n_slots * cfg.node_dim
         self.direct_rule_to_slots = nn.Sequential(
             nn.Linear(cfg.rule_dim, 256),
@@ -164,6 +184,21 @@ class ARCReasoner(nn.Module):
         m = demo_mask.float()[..., None]
         pooled = (z * m).sum(dim=1) / m.sum(dim=1).clamp_min(1.0)
         return self.rule_encoder(pooled)
+
+    def condition_rule_on_query(self, rule: torch.Tensor, H: torch.Tensor) -> torch.Tensor:
+        """Refine a demonstration rule using the query substrate only.
+
+        The rule remains inferred from demonstrations, but the query can attend
+        to different latent slots to disambiguate which transformation aspects
+        are relevant. No target information is used.
+        """
+        qslots = self.query_slot_proj(H)
+        q = self.query_rule_query(rule)[:, None, :]
+        score = (qslots * q).sum(dim=-1) / (self.cfg.rule_dim ** 0.5)
+        attn = torch.softmax(score, dim=-1)[..., None]
+        context = (qslots * attn).sum(dim=1)
+        delta = self.query_rule_refiner(torch.cat([rule, context], dim=-1))
+        return self.query_rule_norm(rule + 0.5 * torch.tanh(delta))
 
     def direct_transform(self, H: torch.Tensor, rule: torch.Tensor) -> torch.Tensor:
         """Predict a latent goal from query state + demonstrations only."""
@@ -271,6 +306,26 @@ class ARCReasoner(nn.Module):
         for p in self.core.parameters():
             p.requires_grad_(False)
 
+    @torch.no_grad()
+    def refresh_operator_base_from_core(self):
+        """Refresh only the frozen CPPN-generated base geometry.
+
+        ARC-trained static/fast residual parameters are preserved.  This makes it
+        possible to evaluate alternate NEAT genomes as a slow structural outer
+        loop without rebuilding or retraining the task-conditioned operator bank.
+        """
+        self.core.materialize_operator_bank()
+        if self.operator_bank is None:
+            self.install_base_operator_bank_from_core()
+            return
+        bt = self.core._transport_bank.detach().to(self.operator_bank.base_transport)
+        bt = bt.float().clamp_min(1e-8)
+        bt = bt / bt.sum(dim=-1, keepdim=True).clamp_min(1e-8)
+        self.operator_bank.base_transport.copy_(bt)
+        self.operator_bank.base_log_transport.copy_(bt.log())
+        self.operator_bank.base_scale.copy_(self.core._scale_bank.detach().to(self.operator_bank.base_scale))
+        self.operator_bank.base_bias.copy_(self.core._bias_bank.detach().to(self.operator_bank.base_bias))
+
     def ensure_operator_bank(self):
         if self.operator_bank is None:
             self.install_base_operator_bank_from_core()
@@ -342,6 +397,37 @@ class ARCReasoner(nn.Module):
             "raw_final": raw_H,
             "blend_gate": blend_gate,
         },)
+
+    @torch.no_grad()
+    def apply_action_sequence(
+        self,
+        H0: torch.Tensor,
+        rule: torch.Tensor,
+        actions,
+        goal_H: torch.Tensor | None = None,
+        blend: bool = True,
+    ):
+        """Apply one shared discrete operator sequence without consulting policy.
+
+        Used by ARC demo-consistency search: demonstrations choose the program,
+        then the exact same operator indices are transferred to the unseen query.
+        STOP terminates the sequence.
+        """
+        self.ensure_operator_bank()
+        H = H0
+        for action in actions:
+            a = int(action)
+            if a == self.stop_action:
+                break
+            idx = torch.full((H.shape[0],), a, device=H.device, dtype=torch.long)
+            H = self.operator_bank.apply_selected(H, idx, rule)
+        raw_H = H
+        if not blend:
+            return raw_H, None
+        if goal_H is None:
+            goal_H = self.predict_goal(H0, rule)
+        H, gate = self.blend_program_result(H0, goal_H, raw_H, rule)
+        return H, gate
 
     @torch.no_grad()
     def greedy_actions(

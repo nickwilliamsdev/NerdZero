@@ -1,3 +1,6 @@
+ARC_PATCH_ID = "v1.8-arc-neat-outer-loop"
+
+
 from dataclasses import dataclass
 import os
 import torch
@@ -106,8 +109,13 @@ class ARCConfig:
     operator_reg_weight: float = 0.01
     usage_balance_weight: float = 0.001
     value_weight: float = 0.10
-    oracle_policy_weight: float = 0.35
+    # One-step oracle remains a local stabilizer, while the beam teacher below
+    # supplies composition-aware first-action targets.
+    oracle_policy_weight: float = 0.15
     oracle_improvement_margin: float = 0.001
+    beam_teacher_weight: float = 0.35
+    beam_teacher_width: int = 4
+    beam_teacher_lookahead: int = 2
 
     # Operator-discovery warmup.  All 22 residual operators compete to explain
     # real ARC input->output latent transitions before the controller learns
@@ -170,6 +178,37 @@ class ARCConfig:
     algebra_checkpoint_path: str = "yetirah_v30_algebra.pt"
     checkpoint_search_depth: int = 3
     require_v30_init: bool = True
+
+
+    # ARC-native inference search. One shared operator program is selected by
+    # how well it explains every known demonstration, then transferred to the
+    # unseen query. Search uses latent distance for expansion and decoded grid
+    # loss to re-rank finalists. No query target is used.
+    demo_search_enabled: bool = True
+    demo_search_beam_width: int = 8
+    demo_search_depth: int = 4
+    demo_search_top_ops: int = 12
+    demo_search_finalists: int = 12
+    demo_search_length_weight: float = 0.002
+    demo_search_grid_weight: float = 0.35
+    demo_search_shape_weight: float = 0.10
+
+
+    # Slow ARC-driven NEAT outer loop.  This evaluates alternate CPPN geometries
+    # with the already-trained ARC machinery frozen (Baldwinian fitness).
+    arc_neat_enabled: bool = True
+    arc_neat_generations: int = 4
+    arc_neat_population: int = 16
+    arc_neat_eval_tasks: int = 12
+    arc_neat_eval_batches: int = 2
+    arc_neat_seed_mutations: int = 2
+    arc_neat_query_weight: float = 1.00
+    arc_neat_demo_fit_weight: float = 0.75
+    arc_neat_improve_weight: float = 0.50
+    arc_neat_complexity_weight: float = 0.0005
+    arc_neat_config_path: str | None = None
+    arc_neat_winner_path: str = "yetirah_arc_neat_winner.pkl"
+    arc_neat_checkpoint_path: str = "yetirah_arc_v1_neat_evolved.pt"
 
     # Checkpoints.
     arc_checkpoint_path: str = "yetirah_arc_v1.pt"
