@@ -1,10 +1,12 @@
 from __future__ import annotations
 
-ARC_NEAT_PATCH_ID = "v1.8.1-resumable-arc-neat"
+ARC_NEAT_PATCH_ID = "v1.8.3-render-neat-template"
 
 import copy
+import configparser
 import pickle
 import random
+import re
 import tempfile
 from pathlib import Path
 from typing import Iterable
@@ -14,24 +16,105 @@ import torch
 
 from sefer.evaluation.arc import evaluate_arc
 from sefer.evolution.evolve_transport import load_evolved_transport_cppn
+try:
+    from sefer.evolution.neat_runtime import NEAT_INPUT_NAMES
+except Exception:
+    NEAT_INPUT_NAMES = None
 
 
 def _looks_like_neat_config(text: str) -> bool:
     return '[NEAT]' in text and '[DefaultGenome]' in text
 
 
+def _is_plain_neat_config(text: str) -> bool:
+    if not _looks_like_neat_config(text):
+        return False
+    first_meaningful = None
+    for raw in text.lstrip('\ufeff').splitlines():
+        line = raw.strip()
+        if not line or line.startswith(('#', ';')):
+            continue
+        first_meaningful = line
+        break
+    if first_meaningful is None or not first_meaningful.startswith('['):
+        return False
+    parser = configparser.ConfigParser()
+    try:
+        parser.read_string(text)
+    except configparser.Error:
+        return False
+    return parser.has_section('NEAT') and parser.has_section('DefaultGenome')
+
+
 def _extract_embedded_neat_config(text: str) -> str | None:
     if not _looks_like_neat_config(text):
         return None
+    if _is_plain_neat_config(text):
+        return text.strip() + '\n'
     start = text.find('[NEAT]')
     block = text[start:]
-    # Common case: config embedded in a Python triple-quoted string.
-    for marker in ('\"\"\"', "'''"):
-        pos = block.find(marker)
-        if pos > 0:
-            block = block[:pos]
-    return block.strip() + '\n' if _looks_like_neat_config(block) else None
+    # Search for the longest parseable INI prefix beginning at [NEAT].
+    lines = block.splitlines()
+    for stop in range(len(lines), 1, -1):
+        candidate = '\n'.join(lines[:stop]).strip() + '\n'
+        if _is_plain_neat_config(candidate):
+            return candidate
+    return None
 
+
+def _render_neat_template(path: Path, cfg) -> Path:
+    """Render placeholders left by v30's Python-generated NEAT config.
+
+    The original v30 helper neat_config_text(num_inputs, pop_size, seed) used
+    an f-string. Extracting its literal INI block therefore leaves placeholders
+    such as {num_inputs}, {pop_size}, and {seed}. Resolve them here before
+    neat-python parses the file.
+    """
+    text = path.read_text(errors="ignore")
+    if "{" not in text:
+        return path
+
+    if NEAT_INPUT_NAMES is not None:
+        num_inputs = len(NEAT_INPUT_NAMES)
+    else:
+        # v30's evolved CPPN feature vector is fixed at 40 inputs:
+        # 5 dst + 5 src + 5 diff + 5 prod + 12 relational/phase + 8 op code.
+        num_inputs = 40
+
+    values = {
+        "pop_size": max(int(getattr(cfg, "arc_neat_population", 16)), 2),
+        "num_inputs": int(num_inputs),
+        "seed": int(getattr(cfg, "seed", 0)),
+    }
+    rendered = text
+    for name, value in values.items():
+        rendered = rendered.replace("{" + name + "}", str(value))
+
+    unresolved = sorted(set(re.findall(r"\{([A-Za-z_][A-Za-z0-9_]*)\}", rendered)))
+    if unresolved:
+        raise ValueError(
+            "ARC-NEAT extracted config still contains unresolved template fields: "
+            + ", ".join(unresolved)
+            + ". Pass --arc-neat-config pointing to a fully rendered neat-python INI "
+              "or extend the template mapping."
+        )
+
+    parser = configparser.ConfigParser()
+    parser.read_string(rendered)
+    if not parser.has_section("NEAT") or not parser.has_section("DefaultGenome"):
+        raise ValueError(f"ARC-NEAT rendered config is missing required sections: {path}")
+    # Catch the exact failure from v1.8.2 before neat-python gets involved.
+    parser.getint("NEAT", "pop_size")
+    parser.getint("DefaultGenome", "num_inputs")
+
+    out = path.parent / ".arc_neat_rendered_config.ini"
+    out.write_text(rendered)
+    print(
+        f"ARC-NEAT rendered config placeholders: "
+        f"num_inputs={values['num_inputs']} pop_size={values['pop_size']} seed={values['seed']}"
+    )
+    print(f"ARC-NEAT rendered config: {out.resolve()}")
+    return out.resolve()
 
 def _candidate_roots(winner: Path) -> list[Path]:
     roots = [winner.parent, Path.cwd(), Path(__file__).resolve().parents[3]]
@@ -54,9 +137,20 @@ def _find_neat_config(requested: str | None, winner_path: str) -> Path:
         if not p.is_file():
             raise FileNotFoundError(f'ARC-NEAT config not found: {p}')
         text = p.read_text(errors='ignore')
-        if not _looks_like_neat_config(text):
-            raise ValueError(f'ARC-NEAT config does not look like a neat-python config: {p}')
-        return p
+        if _is_plain_neat_config(text):
+            return p
+        block = _extract_embedded_neat_config(text)
+        if block:
+            generated = Path(winner_path).expanduser().resolve().parent / '.arc_neat_resolved_config.ini'
+            try:
+                generated.write_text(block)
+            except OSError:
+                generated = Path.cwd() / '.arc_neat_resolved_config.ini'
+                generated.write_text(block)
+            print(f'ARC-NEAT extracted embedded config from explicit source: {p}')
+            print(f'ARC-NEAT generated config: {generated.resolve()}')
+            return generated.resolve()
+        raise ValueError(f'ARC-NEAT config/source contains no parseable neat-python config: {p}')
 
     winner = Path(winner_path).expanduser().resolve()
     roots = _candidate_roots(winner)
@@ -87,9 +181,20 @@ def _find_neat_config(requested: str | None, winner_path: str) -> Path:
             text = p.read_text(errors='ignore')
         except OSError:
             continue
-        if _looks_like_neat_config(text):
-            print(f'ARC-NEAT auto-located config: {p.resolve()}')
+        if _is_plain_neat_config(text):
+            print(f'ARC-NEAT auto-located plain config: {p.resolve()}')
             return p.resolve()
+        block = _extract_embedded_neat_config(text)
+        if block:
+            generated = winner.parent / '.arc_neat_resolved_config.ini'
+            try:
+                generated.write_text(block)
+            except OSError:
+                generated = Path.cwd() / '.arc_neat_resolved_config.ini'
+                generated.write_text(block)
+            print(f'ARC-NEAT extracted embedded config from: {p.resolve()}')
+            print(f'ARC-NEAT generated config: {generated.resolve()}')
+            return generated.resolve()
 
     source_exts = {'.py', '.txt', '.md', '.ini', '.cfg', '.conf'}
     source_seen = set()
@@ -189,7 +294,69 @@ def _fitness_from_metrics(metrics, improve: float, complexity: float, cfg) -> fl
     )
 
 
+def _is_neat_genome(obj) -> bool:
+    return (
+        obj is not None
+        and not isinstance(obj, dict)
+        and hasattr(obj, "nodes")
+        and hasattr(obj, "connections")
+        and hasattr(obj, "mutate")
+    )
+
+
+def _unwrap_seed_genome(obj):
+    """Recover a neat-python genome from legacy v30 winner pickle wrappers.
+
+    Older v30 artifacts may pickle a metadata dict rather than the raw genome.
+    Prefer conventional winner keys, then recursively inspect nested values.
+    """
+    if _is_neat_genome(obj):
+        return obj, "root"
+
+    if isinstance(obj, dict):
+        preferred = (
+            "genome", "winner", "best_genome", "winner_genome",
+            "neat_winner", "cppn_genome", "best",
+        )
+        for key in preferred:
+            if key in obj:
+                found, path = _unwrap_seed_genome(obj[key])
+                if found is not None:
+                    return found, f"{key}.{path}"
+
+        # Fall back to recursively examining every value.  Only accept a
+        # unique genome-like object so metadata dictionaries cannot be
+        # silently misinterpreted.
+        candidates = []
+        for key, value in obj.items():
+            found, path = _unwrap_seed_genome(value)
+            if found is not None:
+                candidates.append((found, f"{key}.{path}"))
+        if len(candidates) == 1:
+            return candidates[0]
+        if len(candidates) > 1:
+            names = ", ".join(path for _, path in candidates[:8])
+            raise RuntimeError(
+                "ARC-NEAT winner pickle contains multiple genome-like objects; "
+                f"cannot choose safely: {names}"
+            )
+
+    # Some legacy containers may store the genome as an attribute.
+    for attr in ("genome", "winner", "best_genome"):
+        if hasattr(obj, attr):
+            found, path = _unwrap_seed_genome(getattr(obj, attr))
+            if found is not None:
+                return found, f"{attr}.{path}"
+
+    return None, None
+
+
 def _seed_population(population, seed_genome, config, mutations: int):
+    if not _is_neat_genome(seed_genome):
+        raise TypeError(
+            "ARC-NEAT seed is not a neat-python genome after unwrapping: "
+            f"type={type(seed_genome).__name__}"
+        )
     keys = list(population.population.keys())
     for i, key in enumerate(keys):
         g = copy.deepcopy(seed_genome)
@@ -221,6 +388,7 @@ def evolve_arc_cppn(model, val_data, cfg, device):
         raise RuntimeError("ARC-NEAT requires neat-python in the active environment") from exc
 
     neat_cfg_path = _find_neat_config(cfg.arc_neat_config_path, cfg.neat_winner_path)
+    neat_cfg_path = _render_neat_template(neat_cfg_path, cfg)
     print(f"ARC-NEAT config: {neat_cfg_path}")
     neat_cfg = neat.Config(
         neat.DefaultGenome,
@@ -231,7 +399,24 @@ def evolve_arc_cppn(model, val_data, cfg, device):
     )
 
     with open(cfg.neat_winner_path, "rb") as f:
-        seed_genome = pickle.load(f)
+        seed_payload = pickle.load(f)
+    seed_genome, seed_path = _unwrap_seed_genome(seed_payload)
+    if seed_genome is None:
+        if isinstance(seed_payload, dict):
+            keys = list(seed_payload.keys())
+            detail = f"dict keys={keys[:20]}"
+        else:
+            detail = f"type={type(seed_payload).__name__}"
+        raise RuntimeError(
+            "ARC-NEAT could not recover a neat-python genome from the v30 winner pickle; "
+            + detail
+        )
+    print(
+        "ARC-NEAT recovered seed genome: "
+        f"path={seed_path} type={type(seed_genome).__name__} "
+        f"nodes={len(getattr(seed_genome, 'nodes', {}))} "
+        f"connections={len(getattr(seed_genome, 'connections', {}))}"
+    )
 
     # Keep this first experiment intentionally small. Population size is a
     # runtime override so the original v30 config does not force 256 candidates.
