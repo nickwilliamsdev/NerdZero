@@ -8,6 +8,9 @@ from pathlib import Path
 import sefer.config as _arc_config_module
 from sefer.config import ARCConfig
 from sefer.experiments.arc_v1 import run
+from sefer.tasks.arc_dataset import ARCMetaDataset
+from sefer.training.arc_trainer import load_arc_v1_checkpoint
+from sefer.evolution.arc_neat_outer import evolve_arc_cppn
 import sefer.training.arc_trainer as _arc_trainer_module
 import sefer.controllers.arc_reasoner as _arc_reasoner_module
 import sefer.evaluation.arc as _arc_eval_module
@@ -31,9 +34,11 @@ def main():
     p.add_argument("--arc-neat-population", type=int, default=None)
     p.add_argument("--arc-neat-eval-tasks", type=int, default=None)
     p.add_argument("--arc-neat-config", type=str, default=None)
+    p.add_argument("--arc-neat-only", action="store_true", help="Run only the NEAT outer loop from an existing ARC checkpoint")
+    p.add_argument("--arc-neat-resume", type=str, default=None, help="Checkpoint for --arc-neat-only; defaults to pre-NEAT, then best, then final")
     args = p.parse_args()
 
-    expected_patch = "v1.8-arc-neat-outer-loop"
+    expected_patch = "v1.8.1-resumable-arc-neat"
     actual_patch = getattr(_arc_config_module, "ARC_PATCH_ID", None)
     trainer_patch = getattr(_arc_trainer_module, "ARC_TRAINER_PATCH_ID", None)
     reasoner_patch = getattr(_arc_reasoner_module, "ARC_REASONER_PATCH_ID", None)
@@ -43,7 +48,7 @@ def main():
     print(f"ARC trainer source: {Path(inspect.getfile(_arc_trainer_module)).resolve()} patch={trainer_patch}")
     print(f"ARC reasoner source: {Path(inspect.getfile(_arc_reasoner_module)).resolve()} patch={reasoner_patch}")
     print(f"ARC eval source: {Path(inspect.getfile(_arc_eval_module)).resolve()} patch={eval_patch}")
-    if actual_patch != expected_patch or trainer_patch != "v1.8-arc-neat-outer-loop" or reasoner_patch != "v1.8-refreshable-cppn-base" or eval_patch != "v1.7-demo-consistency-search":
+    if actual_patch != expected_patch or trainer_patch != "v1.8.1-resumable-arc-neat" or reasoner_patch != "v1.8-refreshable-cppn-base" or eval_patch != "v1.7-demo-consistency-search":
         raise RuntimeError(
             "ARC-v1.8 patch verification failed. Python is importing one or more old files. "
             "Replace the files listed in the patch and run this launcher from the ARC project root."
@@ -73,6 +78,29 @@ def main():
         cfg.arc_neat_eval_tasks = args.arc_neat_eval_tasks
     if args.arc_neat_config:
         cfg.arc_neat_config_path = args.arc_neat_config
+
+    if args.arc_neat_only:
+        import torch
+        device = torch.device(cfg.device)
+        root = ARCMetaDataset(
+            split=cfg.split, max_size=cfg.max_grid_size, max_demos=cfg.max_demos,
+            seed=cfg.seed, limit_tasks=cfg.limit_tasks,
+        )
+        _, val_data = root.split_train_validation(cfg.validation_fraction, cfg.seed)
+        choices = []
+        if args.arc_neat_resume:
+            choices.append(Path(args.arc_neat_resume))
+        choices += [Path(cfg.arc_pre_neat_checkpoint_path), Path(cfg.arc_best_checkpoint_path), Path(cfg.arc_checkpoint_path)]
+        ckpt = next((p for p in choices if p.is_file()), None)
+        if ckpt is None:
+            raise FileNotFoundError('--arc-neat-only could not find an ARC checkpoint. Tried: ' + ', '.join(str(p) for p in choices))
+        print(f'ARC-NEAT-only loading ARC checkpoint: {ckpt.resolve()}')
+        model, _ = load_arc_v1_checkpoint(cfg, str(ckpt), device=device)
+        result = evolve_arc_cppn(model, val_data, cfg, device)
+        if result is not None:
+            print(f"ARC-NEAT-only complete fitness={result['fitness']:.4f} pixel={result['metrics']['pixel_acc']:.3f} demoFit={result['metrics'].get('search_demo_fit', 0.0):.3f}")
+        return
+
     run(cfg)
 
 

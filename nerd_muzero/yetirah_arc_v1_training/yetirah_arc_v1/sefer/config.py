@@ -1,4 +1,4 @@
-ARC_PATCH_ID = "v1.8-arc-neat-outer-loop"
+ARC_PATCH_ID = "v1.8.1-resumable-arc-neat"
 
 
 from dataclasses import dataclass
@@ -209,6 +209,7 @@ class ARCConfig:
     arc_neat_config_path: str | None = None
     arc_neat_winner_path: str = "yetirah_arc_neat_winner.pkl"
     arc_neat_checkpoint_path: str = "yetirah_arc_v1_neat_evolved.pt"
+    arc_pre_neat_checkpoint_path: str = "yetirah_arc_v1_pre_neat.pt"
 
     # Checkpoints.
     arc_checkpoint_path: str = "yetirah_arc_v1.pt"

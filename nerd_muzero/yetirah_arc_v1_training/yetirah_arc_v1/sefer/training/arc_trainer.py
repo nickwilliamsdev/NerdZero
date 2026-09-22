@@ -1,7 +1,7 @@
 
 from __future__ import annotations
 
-ARC_TRAINER_PATCH_ID = "v1.8-arc-neat-outer-loop"
+ARC_TRAINER_PATCH_ID = "v1.8.1-resumable-arc-neat"
 
 import copy
 import math
@@ -777,6 +777,15 @@ def train_arc_v1(cfg, train_data, val_data=None):
     if val_data is not None and cfg.restore_best_at_end and best_program_state is not None:
         model.load_state_dict(best_program_state, strict=True)
         print(f"ARC-v1 restored best program checkpoint from step={best_program_step}")
+
+    # v1.8.1: persist the fully trained/restored ARC model before NEAT starts.
+    # If config discovery/evolution fails, --arc-neat-only can resume from here.
+    pre_neat_metrics = evaluate_arc(model, val_data or train_data, limit=cfg.eval_tasks, device=device)
+    torch.save(
+        {'model_state_dict': model.state_dict(), 'cfg': vars(cfg), 'metrics': pre_neat_metrics},
+        cfg.arc_pre_neat_checkpoint_path,
+    )
+    print(f'saved ARC-v1 pre-NEAT checkpoint: {cfg.arc_pre_neat_checkpoint_path}')
 
     # v1.8: once the reusable ARC machinery is trained and stabilized, evolve
     # only the CPPN-derived base geometry against held-out ARC meta-episodes.

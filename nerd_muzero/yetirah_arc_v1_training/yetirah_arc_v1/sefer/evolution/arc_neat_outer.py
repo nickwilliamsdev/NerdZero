@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-ARC_NEAT_PATCH_ID = "v1.8-baldwinian-arc-neat"
+ARC_NEAT_PATCH_ID = "v1.8.1-resumable-arc-neat"
 
 import copy
 import pickle
@@ -16,44 +16,121 @@ from sefer.evaluation.arc import evaluate_arc
 from sefer.evolution.evolve_transport import load_evolved_transport_cppn
 
 
+def _looks_like_neat_config(text: str) -> bool:
+    return '[NEAT]' in text and '[DefaultGenome]' in text
+
+
+def _extract_embedded_neat_config(text: str) -> str | None:
+    if not _looks_like_neat_config(text):
+        return None
+    start = text.find('[NEAT]')
+    block = text[start:]
+    # Common case: config embedded in a Python triple-quoted string.
+    for marker in ('\"\"\"', "'''"):
+        pos = block.find(marker)
+        if pos > 0:
+            block = block[:pos]
+    return block.strip() + '\n' if _looks_like_neat_config(block) else None
+
+
+def _candidate_roots(winner: Path) -> list[Path]:
+    roots = [winner.parent, Path.cwd(), Path(__file__).resolve().parents[3]]
+    roots.extend(list(winner.parents)[:5])
+    out, seen = [], set()
+    for root in roots:
+        try:
+            key = str(root.resolve())
+        except OSError:
+            key = str(root)
+        if key not in seen and root.exists():
+            seen.add(key)
+            out.append(root)
+    return out
+
+
 def _find_neat_config(requested: str | None, winner_path: str) -> Path:
     if requested:
         p = Path(requested).expanduser().resolve()
         if not p.is_file():
-            raise FileNotFoundError(f"ARC-NEAT config not found: {p}")
+            raise FileNotFoundError(f'ARC-NEAT config not found: {p}')
+        text = p.read_text(errors='ignore')
+        if not _looks_like_neat_config(text):
+            raise ValueError(f'ARC-NEAT config does not look like a neat-python config: {p}')
         return p
 
     winner = Path(winner_path).expanduser().resolve()
-    roots = [winner.parent, winner.parent.parent, Path.cwd()]
-    names = (
-        "neat_config.ini", "neat-config.ini", "config-neat", "config-feedforward",
-        "neat_config.txt", "config.txt",
-    )
+    roots = _candidate_roots(winner)
+    exact_names = {
+        'neat_config.ini', 'neat-config.ini', 'config-neat', 'config-feedforward',
+        'neat_config.txt', 'config.txt', 'neat.cfg', 'neat.ini',
+    }
+    skip_dirs = {'.git', '.venv', 'venv', 'node_modules', '__pycache__', '.cache'}
+
+    candidates = []
     seen = set()
-    candidates: list[Path] = []
     for root in roots:
-        for name in names:
-            candidates.append(root / name)
         try:
-            candidates.extend(root.glob("*neat*config*"))
-            candidates.extend(root.glob("config*"))
-        except OSError:
-            pass
+            for p in root.rglob('*'):
+                if not p.is_file() or any(part in skip_dirs for part in p.parts):
+                    continue
+                name = p.name.lower()
+                if name in exact_names or ('neat' in name and 'config' in name) or name.startswith('config-'):
+                    key = str(p.resolve(strict=False))
+                    if key not in seen:
+                        seen.add(key)
+                        candidates.append(p)
+        except (OSError, PermissionError):
+            continue
 
     for p in candidates:
-        key = str(p.resolve(strict=False))
-        if key in seen or not p.is_file():
-            continue
-        seen.add(key)
         try:
-            text = p.read_text(errors="ignore")
+            text = p.read_text(errors='ignore')
         except OSError:
             continue
-        if "[NEAT]" in text and "[DefaultGenome]" in text:
+        if _looks_like_neat_config(text):
+            print(f'ARC-NEAT auto-located config: {p.resolve()}')
             return p.resolve()
+
+    source_exts = {'.py', '.txt', '.md', '.ini', '.cfg', '.conf'}
+    source_seen = set()
+    for root in roots:
+        try:
+            for p in root.rglob('*'):
+                if not p.is_file() or p.suffix.lower() not in source_exts:
+                    continue
+                if any(part in skip_dirs for part in p.parts):
+                    continue
+                key = str(p.resolve(strict=False))
+                if key in source_seen:
+                    continue
+                source_seen.add(key)
+                try:
+                    if p.stat().st_size > 2_000_000:
+                        continue
+                    text = p.read_text(errors='ignore')
+                except OSError:
+                    continue
+                if not _looks_like_neat_config(text):
+                    continue
+                block = _extract_embedded_neat_config(text)
+                if block:
+                    generated = winner.parent / '.arc_neat_resolved_config.ini'
+                    try:
+                        generated.write_text(block)
+                    except OSError:
+                        generated = Path.cwd() / '.arc_neat_resolved_config.ini'
+                        generated.write_text(block)
+                    print(f'ARC-NEAT extracted embedded config from: {p}')
+                    print(f'ARC-NEAT generated config: {generated.resolve()}')
+                    return generated.resolve()
+        except (OSError, PermissionError):
+            continue
+
+    searched = '\n  - '.join(str(r) for r in roots)
     raise FileNotFoundError(
-        "Could not auto-locate the neat-python config used by the v30 winner. "
-        "Pass --arc-neat-config /path/to/config explicitly."
+        'Could not auto-locate or extract the neat-python config used by the v30 winner. '
+        'Searched recursively under:\n  - ' + searched +
+        '\nPass --arc-neat-config /path/to/config explicitly if the original config lives elsewhere.'
     )
 
 
