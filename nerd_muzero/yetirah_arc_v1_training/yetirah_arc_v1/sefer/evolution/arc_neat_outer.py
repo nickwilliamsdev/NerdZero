@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-ARC_NEAT_PATCH_ID = "v1.8.3-render-neat-template"
+ARC_NEAT_PATCH_ID = "v1.8.5-direct-genome-install"
 
 import copy
 import configparser
@@ -15,7 +15,7 @@ import numpy as np
 import torch
 
 from sefer.evaluation.arc import evaluate_arc
-from sefer.evolution.evolve_transport import load_evolved_transport_cppn
+from sefer.evolution.evolve_transport import require_pytorch_neat
 try:
     from sefer.evolution.neat_runtime import NEAT_INPUT_NAMES
 except Exception:
@@ -239,11 +239,26 @@ def _find_neat_config(requested: str | None, winner_path: str) -> Path:
     )
 
 
-def _install_genome(model, genome, temp_dir: Path):
-    path = temp_dir / f"candidate_{int(getattr(genome, 'key', 0))}.pkl"
-    with path.open("wb") as f:
-        pickle.dump(genome, f, protocol=pickle.HIGHEST_PROTOCOL)
-    load_evolved_transport_cppn(model, str(path))
+def _install_genome(model, genome, neat_cfg):
+    """Install an in-memory neat-python genome directly into the frozen core.
+
+    Candidate genomes already exist in memory and share the active neat.Config.
+    Routing them through the legacy v30 pickle loader is both unnecessary and
+    fragile because that loader expects a saved payload containing both
+    ``winner`` and ``config_text``.
+    """
+    if not _is_neat_genome(genome):
+        raise TypeError(
+            "ARC-NEAT candidate is not a neat-python genome: "
+            f"type={type(genome).__name__}"
+        )
+
+    _, create_cppn_fn = require_pytorch_neat()
+    model.core.op_hyper.install_evolved_cppn(genome, neat_cfg, create_cppn_fn)
+    model.core.operator_codes.requires_grad_(False)
+
+    # The ARC fast-operator bank materializes the CPPN-derived base geometry.
+    # Refresh only that base; learned static/task-conditioned fast weights remain.
     model.refresh_operator_base_from_core()
 
 
@@ -372,9 +387,10 @@ def _seed_population(population, seed_genome, config, mutations: int):
 def evolve_arc_cppn(model, val_data, cfg, device):
     """Slow Baldwinian NEAT outer loop over the CPPN geometry only.
 
-    All learned ARC parameters are held fixed. A genome is installed through the
-    existing v30 loader, which regenerates the frozen base operator geometry while
-    preserving ARC-wide/static and task-conditioned fast-network parameters.
+    All learned ARC parameters are held fixed. Each genome is installed directly
+    into the existing PyTorch-NEAT CPPN runtime and then the frozen base operator
+    geometry is refreshed, preserving ARC-wide/static and task-conditioned fast
+    network parameters.
     """
     if not getattr(cfg, "arc_neat_enabled", False) or int(cfg.arc_neat_generations) <= 0:
         return None
@@ -444,7 +460,7 @@ def evolve_arc_cppn(model, val_data, cfg, device):
                 # The existing loader replaces the CPPN used by the frozen core.
                 # No gradient step occurs, and ARC trainable parameters are untouched.
                 try:
-                    _install_genome(model, genome, temp_dir)
+                    _install_genome(model, genome, neat_cfg)
                     improve = _one_step_improvement(model, fixed_batches)
                     metrics = evaluate_arc(model, val_data, limit=eval_tasks, device=device)
                     complexity = _genome_complexity(genome)
@@ -464,17 +480,40 @@ def evolve_arc_cppn(model, val_data, cfg, device):
                     f"demoFit={metrics.get('search_demo_fit', 0.0):.3f} "
                     f"improve={improve:.3f} complexity={complexity:.0f}"
                 )
+            successful = [
+                genome for _, genome in genomes
+                if genome.fitness is not None and genome.fitness > -999999.0
+            ]
+            if not successful:
+                raise RuntimeError(
+                    "ARC-NEAT: every candidate in this generation failed evaluation. "
+                    "Aborting instead of evolving or saving a sentinel-fitness winner."
+                )
             generation_counter["value"] += 1
 
         winner = population.run(evaluate_genomes, int(cfg.arc_neat_generations))
+        if winner is None or winner.fitness is None or winner.fitness <= -999999.0:
+            raise RuntimeError(
+                "ARC-NEAT did not produce a successfully evaluated winner; refusing to save it."
+            )
 
         winner_path = Path(cfg.arc_neat_winner_path)
+        winner_path.parent.mkdir(parents=True, exist_ok=True)
+        config_text = Path(neat_cfg_path).read_text()
         with winner_path.open("wb") as f:
-            pickle.dump(winner, f, protocol=pickle.HIGHEST_PROTOCOL)
+            pickle.dump(
+                {
+                    "winner": winner,
+                    "config_text": config_text,
+                    "source": ARC_NEAT_PATCH_ID,
+                },
+                f,
+                protocol=pickle.HIGHEST_PROTOCOL,
+            )
         print(f"ARC-NEAT saved winner: {winner_path} fitness={winner.fitness:.4f}")
 
         # Install the winning geometry while preserving all trained ARC weights.
-        _install_genome(model, winner, temp_dir)
+        _install_genome(model, winner, neat_cfg)
         final = evaluate_arc(model, val_data, limit=max(eval_tasks, int(cfg.eval_tasks)), device=device)
         print(
             f"ARC-NEAT winner eval pixel={final['pixel_acc']:.3f} "
