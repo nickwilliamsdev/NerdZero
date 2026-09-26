@@ -1,4 +1,4 @@
-ARC_PATCH_ID = "v1.8.1-resumable-arc-neat"
+ARC_PATCH_ID = "v1.9.1-arc-facing-neat-fitness"
 
 
 from dataclasses import dataclass
@@ -197,15 +197,22 @@ class ARCConfig:
     # Slow ARC-driven NEAT outer loop.  This evaluates alternate CPPN geometries
     # with the already-trained ARC machinery frozen (Baldwinian fitness).
     arc_neat_enabled: bool = True
-    arc_neat_generations: int = 4
-    arc_neat_population: int = 16
-    arc_neat_eval_tasks: int = 12
-    arc_neat_eval_batches: int = 2
+    # v1.9: evaluate geometry on a fixed ARC fitness split and reserve a
+    # disjoint holdout split that never contributes to genome fitness.
+    arc_neat_generations: int = 20
+    arc_neat_population: int = 32
+    arc_neat_eval_tasks: int = 50
+    arc_neat_holdout_tasks: int = 50
+    arc_neat_eval_batches: int = 4
     arc_neat_seed_mutations: int = 2
-    arc_neat_query_weight: float = 1.00
-    arc_neat_demo_fit_weight: float = 0.75
-    arc_neat_improve_weight: float = 0.50
-    arc_neat_complexity_weight: float = 0.0005
+
+    # Relative-to-seed ARC-facing fitness. Query transfer and demonstration
+    # consistency are the selection objective. One-step operator improvement is
+    # still measured/logged, but intentionally carries zero fitness weight.
+    arc_neat_query_weight: float = 2.00
+    arc_neat_demo_fit_weight: float = 1.50
+    arc_neat_improve_weight: float = 0.00
+    arc_neat_complexity_weight: float = 0.00001
     arc_neat_config_path: str | None = None
     arc_neat_winner_path: str = "yetirah_arc_neat_winner.pkl"
     arc_neat_checkpoint_path: str = "yetirah_arc_v1_neat_evolved.pt"

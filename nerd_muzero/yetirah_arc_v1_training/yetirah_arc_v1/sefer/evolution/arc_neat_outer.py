@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-ARC_NEAT_PATCH_ID = "v1.8.5-direct-genome-install"
+ARC_NEAT_PATCH_ID = "v1.9.1-arc-facing-fitness"
 
 import copy
 import configparser
@@ -15,6 +15,7 @@ import numpy as np
 import torch
 
 from sefer.evaluation.arc import evaluate_arc
+from sefer.tasks.arc_dataset import ARCMetaDataset
 from sefer.evolution.evolve_transport import require_pytorch_neat
 try:
     from sefer.evolution.neat_runtime import NEAT_INPUT_NAMES
@@ -262,6 +263,53 @@ def _install_genome(model, genome, neat_cfg):
     model.refresh_operator_base_from_core()
 
 
+def _split_neat_datasets(val_data, cfg):
+    """Create deterministic, disjoint fitness and holdout ARC task sets."""
+    tasks = list(getattr(val_data, "eligible", []))
+    if not tasks:
+        raise RuntimeError("ARC-NEAT validation dataset contains no eligible tasks")
+
+    rng = random.Random(int(getattr(cfg, "seed", 0)) + 1909)
+    rng.shuffle(tasks)
+
+    requested_fit = max(int(getattr(cfg, "arc_neat_eval_tasks", 50)), 1)
+    requested_holdout = max(int(getattr(cfg, "arc_neat_holdout_tasks", 50)), 0)
+
+    if len(tasks) >= requested_fit + requested_holdout:
+        n_fit = requested_fit
+        n_holdout = requested_holdout
+    else:
+        # Preserve a genuinely disjoint holdout whenever there is more than one task.
+        n_fit = min(requested_fit, max(1, len(tasks) // 2))
+        n_holdout = min(requested_holdout, len(tasks) - n_fit)
+
+    fit_tasks = tasks[:n_fit]
+    holdout_tasks = tasks[n_fit:n_fit + n_holdout]
+
+    fitness_data = ARCMetaDataset(
+        max_size=val_data.max_size, max_demos=val_data.max_demos,
+        seed=int(getattr(cfg, "seed", 0)) + 1910, tasks=fit_tasks,
+    )
+    holdout_data = None
+    if holdout_tasks:
+        holdout_data = ARCMetaDataset(
+            max_size=val_data.max_size, max_demos=val_data.max_demos,
+            seed=int(getattr(cfg, "seed", 0)) + 1911, tasks=holdout_tasks,
+        )
+
+    fit_ids = {str(getattr(t, "id", id(t))) for t in fit_tasks}
+    hold_ids = {str(getattr(t, "id", id(t))) for t in holdout_tasks}
+    overlap = fit_ids.intersection(hold_ids)
+    if overlap:
+        raise RuntimeError(f"ARC-NEAT fitness/holdout task leakage detected: {sorted(overlap)[:5]}")
+
+    print(
+        f"ARC-NEAT task split: fitness={len(fit_tasks)} holdout={len(holdout_tasks)} "
+        f"totalVal={len(tasks)} seed={int(getattr(cfg, 'seed', 0)) + 1909}"
+    )
+    return fitness_data, holdout_data
+
+
 def _fixed_meta_batches(data, cfg, device):
     batches = []
     for _ in range(max(int(cfg.arc_neat_eval_batches), 1)):
@@ -297,16 +345,39 @@ def _genome_complexity(genome) -> float:
     return float(nodes + enabled)
 
 
-def _fitness_from_metrics(metrics, improve: float, complexity: float, cfg) -> float:
-    # Query pixel accuracy is the strongest term. Demo-fit measures whether one
-    # shared program actually explains the known examples; one-step improvement
-    # rewards useful local geometry. Complexity is deliberately only a tie-breaker.
+def _metric_triplet(metrics, improve: float):
     return (
-        float(cfg.arc_neat_query_weight) * float(metrics["pixel_acc"])
-        + float(cfg.arc_neat_demo_fit_weight) * float(metrics.get("search_demo_fit", 0.0))
-        + float(cfg.arc_neat_improve_weight) * float(improve)
-        - float(cfg.arc_neat_complexity_weight) * float(complexity)
+        float(metrics.get("pixel_acc", 0.0)),
+        float(metrics.get("search_demo_fit", 0.0)),
+        float(improve),
     )
+
+
+def _relative_fitness(metrics, improve: float, complexity: float, baseline, cfg) -> tuple[float, dict]:
+    """Score a genome by ARC-facing improvement over the original v30 seed.
+
+    Query pixel transfer and demonstration consistency drive selection. The
+    one-step operator-improvement metric is retained in ``deltas`` for
+    diagnostics, but ARCConfig sets its fitness weight to zero in v1.9.1.
+    """
+    pixel, demo, imp = _metric_triplet(metrics, improve)
+    bpixel, bdemo, bimp = _metric_triplet(baseline["metrics"], baseline["improve"])
+    d_pixel = pixel - bpixel
+    d_demo = demo - bdemo
+    d_improve = imp - bimp
+    d_complexity = float(complexity) - float(baseline["complexity"])
+
+    fitness = (
+        float(cfg.arc_neat_query_weight) * d_pixel
+        + float(cfg.arc_neat_demo_fit_weight) * d_demo
+        + float(cfg.arc_neat_improve_weight) * d_improve
+        - float(cfg.arc_neat_complexity_weight) * d_complexity
+    )
+    deltas = {
+        "pixel": d_pixel, "demo": d_demo, "improve": d_improve,
+        "complexity": d_complexity,
+    }
+    return float(fitness), deltas
 
 
 def _is_neat_genome(obj) -> bool:
@@ -443,9 +514,34 @@ def evolve_arc_cppn(model, val_data, cfg, device):
     stats = neat.StatisticsReporter()
     population.add_reporter(stats)
 
-    fixed_batches = _fixed_meta_batches(val_data, cfg, device)
-    eval_tasks = max(int(cfg.arc_neat_eval_tasks), 1)
+    fitness_data, holdout_data = _split_neat_datasets(val_data, cfg)
+    fixed_batches = _fixed_meta_batches(fitness_data, cfg, device)
     model.eval()
+
+    # Establish the original v30 CPPN as a zero-point. Every candidate is scored
+    # on exactly the same fitness tasks and fixed one-step batches.
+    _install_genome(model, seed_genome, neat_cfg)
+    seed_improve = _one_step_improvement(model, fixed_batches)
+    seed_metrics = evaluate_arc(model, fitness_data, limit=fitness_data.task_count, device=device)
+    seed_complexity = _genome_complexity(seed_genome)
+    baseline = {
+        "metrics": dict(seed_metrics),
+        "improve": float(seed_improve),
+        "complexity": float(seed_complexity),
+    }
+    print(
+        f"ARC-NEAT seed baseline fitness=0.0000 "
+        f"pixel={seed_metrics.get('pixel_acc', 0.0):.3f} "
+        f"demoFit={seed_metrics.get('search_demo_fit', 0.0):.3f} "
+        f"improve={seed_improve:.3f} complexity={seed_complexity:.0f}"
+    )
+    print(
+        "ARC-NEAT objective: "
+        f"{float(cfg.arc_neat_query_weight):.2f}*dPixel + "
+        f"{float(cfg.arc_neat_demo_fit_weight):.2f}*dDemo + "
+        f"{float(cfg.arc_neat_improve_weight):.2f}*dImprove - "
+        f"{float(cfg.arc_neat_complexity_weight):.6f}*dComplexity"
+    )
 
     best_seen = {"fitness": float("-inf"), "metrics": None, "key": None}
     generation_counter = {"value": 0}
@@ -462,14 +558,21 @@ def evolve_arc_cppn(model, val_data, cfg, device):
                 try:
                     _install_genome(model, genome, neat_cfg)
                     improve = _one_step_improvement(model, fixed_batches)
-                    metrics = evaluate_arc(model, val_data, limit=eval_tasks, device=device)
+                    metrics = evaluate_arc(
+                        model, fitness_data, limit=fitness_data.task_count, device=device
+                    )
                     complexity = _genome_complexity(genome)
-                    fitness = _fitness_from_metrics(metrics, improve, complexity, cfg)
+                    fitness, deltas = _relative_fitness(
+                        metrics, improve, complexity, baseline, cfg
+                    )
+                    genome._arc_neat_eval_ok = True
                 except Exception as exc:
-                    fitness = -1e6
+                    fitness = -1.0
                     metrics = {"pixel_acc": 0.0, "search_demo_fit": 0.0}
                     improve = 0.0
                     complexity = _genome_complexity(genome)
+                    deltas = {"pixel": 0.0, "demo": 0.0, "improve": 0.0, "complexity": 0.0}
+                    genome._arc_neat_eval_ok = False
                     print(f"ARC-NEAT candidate {gid} failed: {type(exc).__name__}: {exc}")
                 genome.fitness = float(fitness)
                 if fitness > best_seen["fitness"]:
@@ -478,21 +581,24 @@ def evolve_arc_cppn(model, val_data, cfg, device):
                     f"  cand={idx + 1:02d}/{len(genomes):02d} key={gid} fit={fitness:.4f} "
                     f"pixel={metrics.get('pixel_acc', 0.0):.3f} "
                     f"demoFit={metrics.get('search_demo_fit', 0.0):.3f} "
-                    f"improve={improve:.3f} complexity={complexity:.0f}"
+                    f"improve={improve:.3f} complexity={complexity:.0f} "
+                    f"dPixel={deltas['pixel']:+.3f} dDemo={deltas['demo']:+.3f} "
+                    f"dImprove={deltas['improve']:+.3f}"
                 )
             successful = [
                 genome for _, genome in genomes
-                if genome.fitness is not None and genome.fitness > -999999.0
+                if getattr(genome, "_arc_neat_eval_ok", False)
             ]
             if not successful:
                 raise RuntimeError(
                     "ARC-NEAT: every candidate in this generation failed evaluation. "
-                    "Aborting instead of evolving or saving a sentinel-fitness winner."
+                    "Aborting instead of evolving or saving a failure-only population."
                 )
             generation_counter["value"] += 1
 
         winner = population.run(evaluate_genomes, int(cfg.arc_neat_generations))
-        if winner is None or winner.fitness is None or winner.fitness <= -999999.0:
+        if (winner is None or winner.fitness is None
+                or not getattr(winner, "_arc_neat_eval_ok", False)):
             raise RuntimeError(
                 "ARC-NEAT did not produce a successfully evaluated winner; refusing to save it."
             )
@@ -514,22 +620,48 @@ def evolve_arc_cppn(model, val_data, cfg, device):
 
         # Install the winning geometry while preserving all trained ARC weights.
         _install_genome(model, winner, neat_cfg)
-        final = evaluate_arc(model, val_data, limit=max(eval_tasks, int(cfg.eval_tasks)), device=device)
-        print(
-            f"ARC-NEAT winner eval pixel={final['pixel_acc']:.3f} "
-            f"greedyPixel={final.get('greedy_pixel_acc', 0.0):.3f} "
-            f"demoFit={final.get('search_demo_fit', 0.0):.3f} "
-            f"directPixel={final.get('direct_pixel_acc', 0.0):.3f}"
+        fitness_final = evaluate_arc(
+            model, fitness_data, limit=fitness_data.task_count, device=device
         )
+        if holdout_data is not None:
+            holdout_final = evaluate_arc(
+                model, holdout_data, limit=holdout_data.task_count, device=device
+            )
+        else:
+            holdout_final = {}
+
+        print(
+            f"ARC-NEAT winner fitness-split pixel={fitness_final.get('pixel_acc', 0.0):.3f} "
+            f"greedyPixel={fitness_final.get('greedy_pixel_acc', 0.0):.3f} "
+            f"demoFit={fitness_final.get('search_demo_fit', 0.0):.3f} "
+            f"directPixel={fitness_final.get('direct_pixel_acc', 0.0):.3f}"
+        )
+        if holdout_final:
+            print(
+                f"ARC-NEAT winner HOLDOUT pixel={holdout_final.get('pixel_acc', 0.0):.3f} "
+                f"greedyPixel={holdout_final.get('greedy_pixel_acc', 0.0):.3f} "
+                f"demoFit={holdout_final.get('search_demo_fit', 0.0):.3f} "
+                f"directPixel={holdout_final.get('direct_pixel_acc', 0.0):.3f}"
+            )
+
         torch.save(
             {
                 "model_state_dict": model.state_dict(),
                 "cfg": vars(cfg),
-                "metrics": final,
+                "metrics": holdout_final or fitness_final,
+                "fitness_split_metrics": fitness_final,
+                "holdout_metrics": holdout_final,
+                "arc_neat_seed_baseline": baseline,
                 "arc_neat_winner_path": str(winner_path),
                 "arc_neat_fitness": float(winner.fitness),
             },
             cfg.arc_neat_checkpoint_path,
         )
         print(f"ARC-NEAT saved evolved ARC checkpoint: {cfg.arc_neat_checkpoint_path}")
-        return {"winner": winner, "metrics": final, "fitness": float(winner.fitness)}
+        return {
+            "winner": winner,
+            "metrics": holdout_final or fitness_final,
+            "fitness_metrics": fitness_final,
+            "holdout_metrics": holdout_final,
+            "fitness": float(winner.fitness),
+        }
