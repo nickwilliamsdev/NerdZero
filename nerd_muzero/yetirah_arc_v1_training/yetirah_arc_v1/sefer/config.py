@@ -200,7 +200,7 @@ class ARCConfig:
     # v1.9: evaluate geometry on a fixed ARC fitness split and reserve a
     # disjoint holdout split that never contributes to genome fitness.
     arc_neat_generations: int = 20
-    arc_neat_population: int = 32
+    arc_neat_population: int = 96
     arc_neat_eval_tasks: int = 50
     arc_neat_holdout_tasks: int = 50
     arc_neat_eval_batches: int = 4
