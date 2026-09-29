@@ -443,16 +443,44 @@ def _seed_population(population, seed_genome, config, mutations: int):
             "ARC-NEAT seed is not a neat-python genome after unwrapping: "
             f"type={type(seed_genome).__name__}"
         )
+
     keys = list(population.population.keys())
+
     for i, key in enumerate(keys):
         g = copy.deepcopy(seed_genome)
         g.key = key
+
         if i > 0:
             for _ in range(max(int(mutations), 1)):
                 g.mutate(config.genome_config)
+
         g.fitness = None
         population.population[key] = g
-    population.species.speciate(config, population.population, population.generation)
+
+    # IMPORTANT:
+    # The population is being replaced with copies of an externally loaded
+    # genome. neat-python's internal node_indexer may therefore still start
+    # below node IDs that already exist in those genomes.
+    #
+    # Synchronize it so future mutate_add_node() calls always generate fresh
+    # node IDs.
+    all_node_keys = set()
+
+    for genome in population.population.values():
+        all_node_keys.update(genome.nodes.keys())
+
+    if all_node_keys:
+        import itertools
+
+        config.genome_config.node_indexer = itertools.count(
+            max(all_node_keys) + 1
+        )
+
+    population.species.speciate(
+        config,
+        population.population,
+        population.generation,
+    )
 
 
 def evolve_arc_cppn(model, val_data, cfg, device):
