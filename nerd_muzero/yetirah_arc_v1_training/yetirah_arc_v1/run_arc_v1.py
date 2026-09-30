@@ -1,6 +1,3 @@
-
-    
-  
 from __future__ import annotations
 
 import argparse
@@ -13,7 +10,6 @@ from sefer.config import ARCConfig
 from sefer.experiments.arc_v1 import run
 from sefer.tasks.arc_dataset import ARCMetaDataset
 from sefer.training.arc_trainer import load_arc_v1_checkpoint
-from sefer.evolution.arc_neat_outer import evolve_arc_cppn
 import sefer.training.arc_trainer as _arc_trainer_module
 import sefer.controllers.arc_reasoner as _arc_reasoner_module
 import sefer.evaluation.arc as _arc_eval_module
@@ -38,7 +34,7 @@ def main():
     p.add_argument("--arc-neat-resume", type=str, default=None, help="Checkpoint for --arc-neat-only; defaults to pre-NEAT, then best, then final")
     args = p.parse_args()
 
-    expected_patch = "arc-scratch-v1"
+    expected_patch = "arc-scratch-v3-complete"
     actual_patch = getattr(_arc_config_module, "ARC_PATCH_ID", None)
     trainer_patch = getattr(_arc_trainer_module, "ARC_TRAINER_PATCH_ID", None)
     reasoner_patch = getattr(_arc_reasoner_module, "ARC_REASONER_PATCH_ID", None)
@@ -48,9 +44,9 @@ def main():
     print(f"ARC trainer source: {Path(inspect.getfile(_arc_trainer_module)).resolve()} patch={trainer_patch}")
     print(f"ARC reasoner source: {Path(inspect.getfile(_arc_reasoner_module)).resolve()} patch={reasoner_patch}")
     print(f"ARC eval source: {Path(inspect.getfile(_arc_eval_module)).resolve()} patch={eval_patch}")
-    if actual_patch != expected_patch or trainer_patch != "arc-scratch-v1" or reasoner_patch != "v1.8-refreshable-cppn-base" or eval_patch != "v1.7-demo-consistency-search":
+    if actual_patch != expected_patch or trainer_patch != "arc-scratch-v3-complete" or reasoner_patch != "v1.8-refreshable-cppn-base" or eval_patch != "v1.7-demo-consistency-search":
         raise RuntimeError(
-            "ARC-v1.8 patch verification failed. Python is importing one or more old files. "
+            "ARC scratch patch verification failed. Python is importing one or more mismatched files. "
             "Replace the files listed in the patch and run this launcher from the ARC project root."
         )
 
@@ -88,6 +84,7 @@ def main():
             raise FileNotFoundError('--arc-neat-only could not find an ARC checkpoint. Tried: ' + ', '.join(str(p) for p in choices))
         print(f'ARC-NEAT-only loading ARC checkpoint: {ckpt.resolve()}')
         model, _ = load_arc_v1_checkpoint(cfg, str(ckpt), device=device)
+        from sefer.evolution.arc_neat_outer import evolve_arc_cppn
         result = evolve_arc_cppn(model, val_data, cfg, device)
         if result is not None:
             print(f"ARC-NEAT-only complete fitness={result['fitness']:.4f} pixel={result['metrics']['pixel_acc']:.3f} demoFit={result['metrics'].get('search_demo_fit', 0.0):.3f}")
@@ -98,4 +95,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
