@@ -1,64 +1,16 @@
-ARC_PATCH_ID = "v1.9.1-arc-facing-neat-fitness"
+
+    
+  
+ARC_PATCH_ID = "arc-scratch-v1"
 
 
 from dataclasses import dataclass
-import os
 import torch
 
 
 @dataclass
-class V30Config:
-    seed: int = 0
-    steps: int = 4200
-    batch_size: int = 32
-    inner_rollout_steps: int = 1
-    warmup_steps: int = 250
-    algebra_steps: int = 1200
-    es_every: int = 0
-    diagnostic_every: int = 25
-    mcts_train_every: int = 5
-    mcts_train_samples: int = 4
-    mcts_simulations: int = 96
-    mcts_eval_simulations: int = 384
-    mcts_eval_batch: int = 16
-    neat_generations: int = 100
-    neat_population: int = 256
-    neat_workers: int = 12
-    neat_inner_steps: int = 32
-    neat_inner_lr: float = 1e-2
-    neat_seed: int = 0
-    device: str = "cuda" if torch.cuda.is_available() else "cpu"
-
-    reuse_neat_winner: bool = True
-    neat_winner_path: str = "yetirah_v30_neat_winner.pkl"
-    resume_from_algebra: bool = False
-    algebra_checkpoint_path: str = "yetirah_v30_algebra.pt"
-    posttrain_checkpoint_path: str = "yetirah_v30_posttrain.pt"
-    materialize_frozen_operators: bool = True
-    matmul_precision: str = "high"
-
-
-@dataclass
-class V30DGXConfig(V30Config):
-    batch_size: int = 256
-    mcts_eval_batch: int = 64
-    neat_workers: int = min(16, os.cpu_count() or 12)
-    reuse_neat_winner: bool = True
-    materialize_frozen_operators: bool = True
-
-
-@dataclass
 class ARCConfig:
-    """ARC-v1.4 meta-learning defaults.
-
-    v1.3 keeps the v30 prior and adds:
-      * blended raw/balanced grid reconstruction
-      * best-direct checkpoint restore before operator learning
-      * a dedicated ARC operator-discovery warmup
-      * frozen task inference during program composition
-      * automatic restore of the best validation checkpoint at the end
-      * task-conditioned CPPN-initialized fast operator networks
-    """
+    """ARC-only scratch-training configuration; no imported model weights."""
 
     seed: int = 0
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
@@ -146,79 +98,3 @@ class ARCConfig:
     foreground_boost: float = 1.25
     color_balance_mix: float = 0.35
 
-    # Task-conditioned fast operator network around the frozen v30/CPPN algebra.
-    # The CPPN-generated transports become W0; a rule+operator hypernetwork emits
-    # low-rank task-local fast weights. A smaller static residual remains as a
-    # trainable ARC-wide correction.
-    fast_operator_rank: int = 8
-    fast_operator_static_rank: int = 4
-    fast_operator_code_dim: int = 16
-    fast_operator_hidden_dim: int = 192
-    fast_transport_delta_scale: float = 0.35
-    fast_static_delta_scale: float = 0.15
-    fast_feature_delta_scale: float = 0.08
-    fast_gate_init: float = -1.0
-    fast_gate_max: float = 0.50
-    fast_delta_rms_cap: float = 1.0
-    fast_transport_kl_weight: float = 0.02
-    fast_gate_penalty_weight: float = 0.005
-
-    # Safe program residual: the direct predicted goal remains an inference-time
-    # fallback. The program learns only a gated residual around that prediction.
-    program_blend_init: float = -1.5
-
-    # Legacy aliases retained so older launcher/config code does not break.
-    operator_residual_rank: int = 8
-    operator_residual_scale: float = 0.50
-    feature_residual_scale: float = 0.10
-
-    # Initialize from validated synthetic geometry when files are available.
-    initialize_from_v30: bool = True
-    neat_winner_path: str = "yetirah_v30_neat_winner.pkl"
-    algebra_checkpoint_path: str = "yetirah_v30_algebra.pt"
-    checkpoint_search_depth: int = 3
-    require_v30_init: bool = True
-
-
-    # ARC-native inference search. One shared operator program is selected by
-    # how well it explains every known demonstration, then transferred to the
-    # unseen query. Search uses latent distance for expansion and decoded grid
-    # loss to re-rank finalists. No query target is used.
-    demo_search_enabled: bool = True
-    demo_search_beam_width: int = 8
-    demo_search_depth: int = 4
-    demo_search_top_ops: int = 12
-    demo_search_finalists: int = 12
-    demo_search_length_weight: float = 0.002
-    demo_search_grid_weight: float = 0.35
-    demo_search_shape_weight: float = 0.10
-
-
-    # Slow ARC-driven NEAT outer loop.  This evaluates alternate CPPN geometries
-    # with the already-trained ARC machinery frozen (Baldwinian fitness).
-    arc_neat_enabled: bool = True
-    # v1.9: evaluate geometry on a fixed ARC fitness split and reserve a
-    # disjoint holdout split that never contributes to genome fitness.
-    arc_neat_generations: int = 20
-    arc_neat_population: int = 96
-    arc_neat_eval_tasks: int = 50
-    arc_neat_holdout_tasks: int = 50
-    arc_neat_eval_batches: int = 4
-    arc_neat_seed_mutations: int = 2
-
-    # Relative-to-seed ARC-facing fitness. Query transfer and demonstration
-    # consistency are the selection objective. One-step operator improvement is
-    # still measured/logged, but intentionally carries zero fitness weight.
-    arc_neat_query_weight: float = 2.00
-    arc_neat_demo_fit_weight: float = 1.50
-    arc_neat_improve_weight: float = 0.00
-    arc_neat_complexity_weight: float = 0.00001
-    arc_neat_config_path: str | None = None
-    arc_neat_winner_path: str = "yetirah_arc_neat_winner.pkl"
-    arc_neat_checkpoint_path: str = "yetirah_arc_v1_neat_evolved.pt"
-    arc_pre_neat_checkpoint_path: str = "yetirah_arc_v1_pre_neat.pt"
-
-    # Checkpoints.
-    arc_checkpoint_path: str = "yetirah_arc_v1.pt"
-    arc_best_checkpoint_path: str = "yetirah_arc_v1_best.pt"
-    restore_best_at_end: bool = True
