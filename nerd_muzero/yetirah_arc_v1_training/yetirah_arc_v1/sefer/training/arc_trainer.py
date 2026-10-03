@@ -1,17 +1,13 @@
-
 from __future__ import annotations
 
 ARC_TRAINER_PATCH_ID = "arc-scratch-v3-complete"
+ARC_TRAINER_ARCH = "recursive-deltanet-v1-generalization-v2"
 
 import copy
-import math
 import random
-from pathlib import Path
-from typing import Tuple
 
 import numpy as np
 import torch
-import torch.nn.functional as F
 
 from sefer.controllers.arc_reasoner import ARCReasoner
 from sefer.representation.arc_grid import arc_grid_loss
@@ -26,14 +22,6 @@ def set_seed(seed: int):
         torch.cuda.manual_seed_all(seed)
 
 
-def initialize_arc_from_scratch(model: ARCReasoner, cfg):
-    """Initialize ARC entirely inside this project; no inherited checkpoints."""
-    from sefer.evolution.arc_neat_outer import initialize_arc_cppn_from_scratch
-    initialize_arc_cppn_from_scratch(model, cfg)
-    model.ensure_operator_bank()
-    print("ARC scratch initialization complete")
-
-
 def _decode_loss(model, H, target, target_shape):
     c, h, w = model.decode_grid(H)
     color_loss, stats = arc_grid_loss(
@@ -44,170 +32,112 @@ def _decode_loss(model, H, target, target_shape):
     return color_loss, stats["shape_loss"], stats
 
 
+def _loo_auxiliary(model, batch):
+    """Predict one demonstration from the other demonstrations when possible."""
+    counts = batch.demo_mask.sum(dim=1)
+    valid_rows = torch.nonzero(counts >= 2, as_tuple=False).flatten()
+    if valid_rows.numel() == 0:
+        return None
+
+    # Deterministic choice keeps the auxiliary stable; dataset sampling already
+    # randomizes which task/examples occupy each batch.
+    held = []
+    for b in valid_rows.tolist():
+        held.append(int(torch.nonzero(batch.demo_mask[b], as_tuple=False)[0, 0]))
+    held = torch.tensor(held, device=batch.demo_mask.device, dtype=torch.long)
+
+    dx = batch.demos_x[valid_rows].clone()
+    dy = batch.demos_y[valid_rows].clone()
+    dxs = batch.demos_x_shapes[valid_rows].clone()
+    dys = batch.demos_y_shapes[valid_rows].clone()
+    dm = batch.demo_mask[valid_rows].clone()
+
+    rows = torch.arange(valid_rows.numel(), device=dm.device)
+    q = dx[rows, held]
+    qs = dxs[rows, held]
+    y = dy[rows, held]
+    ys = dys[rows, held]
+    dm[rows, held] = False
+
+    rule = model.encode_rule(dx, dy, dxs, dys, dm)
+    Hq = model.encode_grid(q, qs)
+    rule = model.condition_rule_on_query(rule, Hq)
+    Hd = model.predict_goal(Hq, rule)
+    c, s, _ = _decode_loss(model, Hd, y, ys)
+    return c + model.cfg.shape_weight * s
+
+
 def _set_requires_grad(module, value: bool):
     for p in module.parameters():
         p.requires_grad_(value)
 
 
-def _program_stage(cfg, step: int) -> Tuple[int, int, int]:
-    """Return (stage_index, active_operator_count, max_depth)."""
-    progress = (step - 1) / max(cfg.program_steps - 1, 1)
-    b0, b1, b2 = cfg.program_stage_fractions
-    if progress < b0:
-        idx = 0
-    elif progress < b1:
-        idx = 1
-    elif progress < b2:
-        idx = 2
-    else:
-        idx = 3
-    active = min(int(cfg.program_stage_active_ops[idx]), int(cfg.operator_count))
-    depth = min(int(cfg.program_stage_depths[idx]), int(cfg.max_program_steps))
-    return idx, max(active, 1), max(depth, 1)
+def _recursive_loo_auxiliary(model, batch):
+    """Train recursion on a demonstration withheld from the task context.
 
-
-@torch.no_grad()
-def _beam_teacher_actions(model, state, rule, target, active_indices, lookahead: int, width: int):
-    """Training-only shallow lookahead teacher.
-
-    Returns the first action of the best program found within ``lookahead``
-    operator applications. STOP is represented by keeping the current state.
-    The target latent is used only to construct this supervision target.
+    The base encoder/direct predictor remain frozen during this phase. The
+    recursive cell must improve the held-out demonstration prediction over
+    successive reasoning steps.
     """
-    B, N, D = state.shape
-    device = state.device
-    stop = model.cfg.operator_count
-    active_indices = active_indices.to(device=device, dtype=torch.long)
-    A = int(active_indices.numel())
-    width = max(int(width), 1)
-    lookahead = max(int(lookahead), 1)
+    counts = batch.demo_mask.sum(dim=1)
+    valid_rows = torch.nonzero(counts >= 2, as_tuple=False).flatten()
+    if valid_rows.numel() == 0:
+        return None, None, {}
 
-    # Global best includes immediate STOP.
-    best_score = (state - target).pow(2).mean(dim=(1, 2))
-    best_first = torch.full((B,), stop, device=device, dtype=torch.long)
+    held = []
+    for b in valid_rows.tolist():
+        held.append(int(torch.nonzero(batch.demo_mask[b], as_tuple=False)[0, 0]))
+    held = torch.tensor(held, device=batch.demo_mask.device, dtype=torch.long)
 
-    frontier = state[:, None]  # [B,K,N,D]
-    first = torch.full((B, 1), stop, device=device, dtype=torch.long)
-    for depth in range(lookahead):
-        K = frontier.shape[1]
-        flat_state = frontier.reshape(B * K, N, D)
-        flat_rule = rule[:, None].expand(B, K, rule.shape[-1]).reshape(B * K, -1)
-        all_ops = model.operator_bank.apply_all(flat_state, flat_rule)[:, active_indices]
-        cand = all_ops.reshape(B, K * A, N, D)
-        score = (cand - target[:, None]).pow(2).mean(dim=(2, 3))
+    dx = batch.demos_x[valid_rows].clone()
+    dy = batch.demos_y[valid_rows].clone()
+    dxs = batch.demos_x_shapes[valid_rows].clone()
+    dys = batch.demos_y_shapes[valid_rows].clone()
+    dm = batch.demo_mask[valid_rows].clone()
 
-        if depth == 0:
-            cand_first = active_indices[None, :].expand(B, A)
-        else:
-            cand_first = first[:, :, None].expand(B, K, A).reshape(B, K * A)
+    rows = torch.arange(valid_rows.numel(), device=dm.device)
+    q = dx[rows, held]
+    qs = dxs[rows, held]
+    y = dy[rows, held]
+    ys = dys[rows, held]
+    dm[rows, held] = False
 
-        flat_score = score
-        flat_first = cand_first
-        better_score, better_idx = flat_score.min(dim=1)
-        better_first = flat_first.gather(1, better_idx[:, None]).squeeze(1)
-        improve = better_score < best_score
-        best_score = torch.where(improve, better_score, best_score)
-        best_first = torch.where(improve, better_first, best_first)
+    rule = model.encode_rule(dx, dy, dxs, dys, dm)
+    Hq = model.encode_grid(q, qs)
+    rule = model.condition_rule_on_query(rule, Hq)
+    Ht = model.encode_grid(y, ys).detach()
 
-        kkeep = min(width, flat_score.shape[1])
-        _, top_idx = torch.topk(flat_score, k=kkeep, largest=False, dim=1)
-        gather_idx = top_idx[:, :, None, None].expand(B, kkeep, N, D)
-        frontier = cand.gather(1, gather_idx)
-        first = flat_first.gather(1, top_idx)
-
-    return best_first
-
-
-@torch.no_grad()
-def _evaluate_operator_discovery(model, data, cfg, device):
-    if data is None:
-        return None
-    model.eval()
-    vals = {"best_lat": 0.0, "base_lat": 0.0, "improve": 0.0, "pixel": 0.0}
-    batches = max(int(cfg.operator_discovery_val_batches), 1)
-    bs = min(int(cfg.batch_size), max(int(cfg.eval_tasks), 1))
-    for _ in range(batches):
-        batch = data.sample_batch(bs, device)
-        rule = model.encode_rule(
-            batch.demos_x, batch.demos_y,
-            batch.demos_x_shapes, batch.demos_y_shapes, batch.demo_mask,
-        )
-        Hq = model.encode_grid(batch.query_x, batch.query_shape)
-        rule = model.condition_rule_on_query(rule, Hq)
-        Ht = model.encode_grid(batch.target_y, batch.target_shape)
-        all_states = model.operator_bank.apply_all(Hq, rule)
-        per_op_err = (all_states - Ht[:, None]).pow(2).mean(dim=(2, 3))
-        best_err, best_idx = per_op_err.min(dim=1)
-        base_err = (Hq - Ht).pow(2).mean(dim=(1, 2))
-        b = torch.arange(Hq.shape[0], device=device)
-        best_state = all_states[b, best_idx]
-        _, _, stats = _decode_loss(model, best_state, batch.target_y, batch.target_shape)
-        vals["best_lat"] += float(best_err.mean())
-        vals["base_lat"] += float(base_err.mean())
-        vals["improve"] += float((best_err < base_err).float().mean())
-        vals["pixel"] += float(stats["pixel_acc"])
-    for k in vals:
-        vals[k] /= batches
-    vals["score"] = vals["pixel"] + 0.25 * vals["improve"] - 0.10 * vals["best_lat"]
-    return vals
-
-
-@torch.no_grad()
-def _rank_discovered_operators(model, data, cfg, device):
-    model.eval()
-    usage = torch.zeros(cfg.operator_count, device=device)
-    batches = max(int(cfg.operator_discovery_val_batches), 1)
-    bs = min(int(cfg.batch_size), max(int(cfg.eval_tasks), 1))
-    for _ in range(batches):
-        batch = data.sample_batch(bs, device)
-        rule = model.encode_rule(
-            batch.demos_x, batch.demos_y,
-            batch.demos_x_shapes, batch.demos_y_shapes, batch.demo_mask,
-        )
-        Hq = model.encode_grid(batch.query_x, batch.query_shape)
-        rule = model.condition_rule_on_query(rule, Hq)
-        Ht = model.encode_grid(batch.target_y, batch.target_shape)
-        all_states = model.operator_bank.apply_all(Hq, rule)
-        err = (all_states - Ht[:, None]).pow(2).mean(dim=(2, 3))
-        best = err.argmin(dim=1)
-        usage += torch.bincount(best, minlength=cfg.operator_count).float()
-    return torch.argsort(usage, descending=True)
-
-
-def _verify_v16_runtime(model, cfg):
-    """Fail fast if the query-conditioned/beam patch was not loaded."""
-    required_cfg = (
-        "beam_teacher_weight", "beam_teacher_width", "beam_teacher_lookahead",
-        "demo_search_enabled", "demo_search_beam_width", "demo_search_depth",
-        "arc_neat_enabled", "arc_neat_generations", "arc_neat_population"
+    _, info = model.recursive_reason(
+        Hq, rule, steps=model.cfg.recursive_steps, return_trace=True
     )
-    missing_cfg = [name for name in required_cfg if not hasattr(cfg, name)]
-    if missing_cfg:
-        raise RuntimeError(
-            "ARC-v1.8 runtime verification failed: config is missing "
-            + ", ".join(missing_cfg)
-            + ". An older sefer/config.py is being imported."
-        )
-    if not hasattr(model, "condition_rule_on_query"):
-        raise RuntimeError(
-            "ARC-v1.8 runtime verification failed: ARCReasoner has no "
-            "condition_rule_on_query(). An older arc_reasoner.py is being imported."
-        )
-    if "_beam_teacher_actions" not in globals():
-        raise RuntimeError(
-            "ARC-v1.8 runtime verification failed: beam teacher is unavailable. "
-            "An older arc_trainer.py is being imported."
-        )
-    print(
-        "ARC-v1 patch=v1.8-arc-neat-outer-loop "
-        f"queryConditioning=True beamTeacher=True demoSearch={cfg.demo_search_enabled} "
-        f"beamWidth={cfg.beam_teacher_width} "
-        f"beamLookahead={cfg.beam_teacher_lookahead} "
-        f"beamWeight={cfg.beam_teacher_weight:.3f} "
-        f"arcNeat={cfg.arc_neat_enabled} arcNeatGen={cfg.arc_neat_generations} "
-        f"arcNeatPop={cfg.arc_neat_population}"
+
+    step_losses = []
+    step_latents = []
+    for state in info["states"]:
+        c, s, _ = _decode_loss(model, state, y, ys)
+        latent = (state - Ht).pow(2).mean()
+        total = c + model.cfg.shape_weight * s + model.cfg.recursive_latent_weight * latent
+        step_losses.append(total)
+        step_latents.append(latent)
+
+    final_loss = step_losses[-1]
+    margin = float(model.cfg.recursive_step_improvement_margin)
+    improve_terms = [
+        torch.relu(next_loss - prev_loss + margin)
+        for prev_loss, next_loss in zip(step_losses[:-1], step_losses[1:])
+    ]
+    improvement_loss = (
+        torch.stack(improve_terms).mean()
+        if improve_terms else torch.zeros((), device=final_loss.device)
     )
-    print(f"ARC-v1 trainer source: {Path(__file__).resolve()}")
+
+    stats = {
+        "loo_initial": float(step_losses[0].detach().item()),
+        "loo_final": float(step_losses[-1].detach().item()),
+        "loo_latent_initial": float(step_latents[0].detach().item()),
+        "loo_latent_final": float(step_latents[-1].detach().item()),
+    }
+    return final_loss, improvement_loss, stats
 
 
 def train_arc_v1(cfg, train_data, val_data=None):
@@ -215,36 +145,28 @@ def train_arc_v1(cfg, train_data, val_data=None):
     torch.set_float32_matmul_precision(cfg.matmul_precision)
     device = torch.device(cfg.device)
     model = ARCReasoner(cfg).to(device)
-    _verify_v16_runtime(model, cfg)
-    initialize_arc_from_scratch(model, cfg)
 
-    print(f"ARC-v1 device={device}")
-    print(f"ARC-v1 tasks={train_data.task_count} batch={cfg.batch_size}")
-    print(f"ARC-v1 params={sum(p.numel() for p in model.parameters()):,}")
+    print(f"ARC recursive-v1 device={device}")
+    print(f"ARC recursive-v1 tasks={train_data.task_count} batch={cfg.batch_size}")
+    print(f"ARC recursive-v1 params={sum(p.numel() for p in model.parameters()):,}")
     print(
-        f"ARC-v1 curriculum codec={cfg.codec_steps} direct={cfg.direct_steps} "
-        f"opDiscovery={cfg.operator_discovery_steps} program={cfg.program_steps}"
-    )
-    print(
-        "ARC-v1 program stages="
-        + ", ".join(
-            f"ops{ops}/d{depth}"
-            for ops, depth in zip(cfg.program_stage_active_ops, cfg.program_stage_depths)
-        )
+        f"ARC recursive-v1 curriculum codec={cfg.codec_steps} "
+        f"direct={cfg.direct_steps} recursive={cfg.program_steps} "
+        f"reasonSteps={cfg.recursive_steps}"
     )
 
-    # ------------------------------------------------------------------
-    # Phase A: grid <-> substrate codec.
-    # ------------------------------------------------------------------
+    # Phase A: grid codec.
     codec_params = list(model.grid_encoder.parameters()) + list(model.grid_decoder.parameters())
-    codec_opt = torch.optim.AdamW(codec_params, lr=cfg.codec_lr, weight_decay=cfg.weight_decay)
+    codec_opt = torch.optim.AdamW(
+        codec_params, lr=cfg.codec_lr, weight_decay=cfg.weight_decay
+    )
     for step in range(1, cfg.codec_steps + 1):
         model.train()
         grid, shape = train_data.sample_grid_batch(cfg.batch_size, device)
         H = model.encode_grid(grid, shape)
-        color_logits, h_logits, w_logits = model.decode_grid(H)
+        c, h, w = model.decode_grid(H)
         color_loss, stats = arc_grid_loss(
-            color_logits, h_logits, w_logits, grid, shape,
+            c, h, w, grid, shape,
             foreground_boost=cfg.foreground_boost,
             balance_mix=cfg.color_balance_mix,
         )
@@ -253,34 +175,22 @@ def train_arc_v1(cfg, train_data, val_data=None):
         loss.backward()
         torch.nn.utils.clip_grad_norm_(codec_params, cfg.grad_clip)
         codec_opt.step()
+
         if step == 1 or step % cfg.diagnostic_every == 0 or step == cfg.codec_steps:
             print(
                 f"arc codec step={step:04d} loss={loss.item():.4f} "
-                f"cellCE={color_loss.item():.4f} pixelAcc={stats['pixel_acc'].item():.3f} "
-                f"fgAcc={stats['foreground_acc'].item():.3f} bgAcc={stats['background_acc'].item():.3f} "
+                f"pixelAcc={stats['pixel_acc'].item():.3f} "
+                f"fgAcc={stats['foreground_acc'].item():.3f} "
                 f"shapeAcc={stats['shape_acc'].item():.3f}"
             )
 
-    # ------------------------------------------------------------------
-    # Phase B: demonstrations -> rule -> predicted latent goal.
-    # ------------------------------------------------------------------
-    direct_params = (
-        list(model.grid_encoder.parameters())
-        + list(model.grid_decoder.parameters())
-        + list(model.demo_slot_encoder.parameters())
-        + list(model.demo_slot_score.parameters())
-        + list(model.demo_pair_encoder.parameters())
-        + list(model.rule_encoder.parameters())
-        + list(model.query_slot_proj.parameters())
-        + list(model.query_rule_query.parameters())
-        + list(model.query_rule_refiner.parameters())
-        + list(model.query_rule_norm.parameters())
-        + list(model.direct_rule_to_slots.parameters())
-        + list(model.direct_norm.parameters())
+    # Phase B: direct task-conditioned predictor.
+    direct_opt = torch.optim.AdamW(
+        model.parameters(), lr=cfg.direct_lr, weight_decay=cfg.weight_decay
     )
-    direct_opt = torch.optim.AdamW(direct_params, lr=cfg.direct_lr, weight_decay=cfg.weight_decay)
+    best_direct = None
     best_direct_score = -1.0
-    best_direct_state = None
+
     for step in range(1, cfg.direct_steps + 1):
         model.train()
         batch = train_data.sample_batch(cfg.batch_size, device)
@@ -290,423 +200,231 @@ def train_arc_v1(cfg, train_data, val_data=None):
         )
         Hq = model.encode_grid(batch.query_x, batch.query_shape)
         rule = model.condition_rule_on_query(rule, Hq)
-        Hg = model.predict_goal(Hq, rule)
-        color_loss, shape_loss, stats = _decode_loss(model, Hg, batch.target_y, batch.target_shape)
+        Hd = model.predict_goal(Hq, rule)
+        Ht = model.encode_grid(batch.target_y, batch.target_shape).detach()
 
-        # Keep the codec useful while the demo-conditioned goal predictor forms.
-        H_identity = model.encode_grid(batch.query_x, batch.query_shape)
-        id_color, id_shape, _ = _decode_loss(model, H_identity, batch.query_x, batch.query_shape)
-        loss = color_loss + cfg.shape_weight * shape_loss + 0.20 * id_color + 0.05 * id_shape
+        color_loss, shape_loss, stats = _decode_loss(
+            model, Hd, batch.target_y, batch.target_shape
+        )
+        latent_loss = (Hd - Ht).pow(2).mean()
+        loo = _loo_auxiliary(model, batch)
+        loss = (
+            color_loss
+            + cfg.shape_weight * shape_loss
+            + cfg.direct_latent_weight * latent_loss
+        )
+        if loo is not None:
+            loss = loss + cfg.loo_demo_weight * loo
+
         direct_opt.zero_grad(set_to_none=True)
         loss.backward()
-        torch.nn.utils.clip_grad_norm_(direct_params, cfg.grad_clip)
+        torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip)
         direct_opt.step()
+
         if step == 1 or step % cfg.diagnostic_every == 0 or step == cfg.direct_steps:
             print(
                 f"arc direct step={step:04d} loss={loss.item():.4f} "
-                f"cellCE={color_loss.item():.4f} pixelAcc={stats['pixel_acc'].item():.3f} "
-                f"fgAcc={stats['foreground_acc'].item():.3f} bgAcc={stats['background_acc'].item():.3f} "
-                f"shapeAcc={stats['shape_acc'].item():.3f}"
-            )
-        if val_data is not None and cfg.eval_every > 0 and step % cfg.eval_every == 0:
-            dm = evaluate_arc_direct(model, val_data, limit=cfg.eval_tasks, device=device)
-            dscore = dm["exact"] + 0.10 * dm["pixel_acc"]
-            print(
-                f"arc direct val step={step:04d} exact={dm['exact']:.3f} "
-                f"pixel={dm['pixel_acc']:.3f} shape={dm['shape_acc']:.3f}"
-            )
-            if dscore > best_direct_score:
-                best_direct_score = dscore
-                best_direct_state = copy.deepcopy(model.state_dict())
-
-    if best_direct_state is not None:
-        model.load_state_dict(best_direct_state, strict=True)
-        print(f"ARC-v1 restored best direct model score={best_direct_score:.4f}")
-
-    # ------------------------------------------------------------------
-    # Phase C: ARC operator discovery.  Keep the representation fixed and let
-    # the low-rank residual operators specialize on real ARC transitions before
-    # asking the controller to compose them.
-    # ------------------------------------------------------------------
-    _set_requires_grad(model.grid_encoder, False)
-    _set_requires_grad(model.grid_decoder, False)
-    _set_requires_grad(model.demo_slot_encoder, False)
-    _set_requires_grad(model.demo_slot_score, False)
-    _set_requires_grad(model.demo_pair_encoder, False)
-    _set_requires_grad(model.rule_encoder, False)
-    _set_requires_grad(model.query_slot_proj, False)
-    _set_requires_grad(model.query_rule_query, False)
-    _set_requires_grad(model.query_rule_refiner, False)
-    _set_requires_grad(model.query_rule_norm, False)
-    _set_requires_grad(model.direct_rule_to_slots, False)
-    _set_requires_grad(model.direct_norm, False)
-    for p in model.core.parameters():
-        p.requires_grad_(False)
-
-    op_discovery_params = list(model.operator_bank.parameters())
-    op_discovery_opt = torch.optim.AdamW(
-        op_discovery_params, lr=cfg.operator_discovery_lr, weight_decay=cfg.weight_decay
-    )
-    discovery_usage_accum = torch.zeros(cfg.operator_count, device=device)
-    best_operator_state = None
-    best_operator_score = -float("inf")
-    best_operator_step = None
-    for step in range(1, cfg.operator_discovery_steps + 1):
-        model.train()
-        batch = train_data.sample_batch(cfg.batch_size, device)
-        with torch.no_grad():
-            rule = model.encode_rule(
-                batch.demos_x, batch.demos_y,
-                batch.demos_x_shapes, batch.demos_y_shapes, batch.demo_mask,
-            )
-            Hq = model.encode_grid(batch.query_x, batch.query_shape)
-            rule = model.condition_rule_on_query(rule, Hq)
-            Ht = model.encode_grid(batch.target_y, batch.target_shape)
-        all_states = model.operator_bank.apply_all(Hq, rule)
-        per_op_err = (all_states - Ht[:, None]).pow(2).mean(dim=(2, 3))
-        progress = (step - 1) / max(cfg.operator_discovery_steps - 1, 1)
-        tau = (
-            cfg.operator_discovery_temp_start * (1.0 - progress)
-            + cfg.operator_discovery_temp_end * progress
-        )
-        assignment = torch.softmax(-per_op_err / max(tau, 1e-4), dim=1)
-        discovery_usage_accum += assignment.detach().mean(dim=0)
-        soft_latent = (assignment * per_op_err).sum(dim=1).mean()
-        Hmix = (all_states * assignment[:, :, None, None]).sum(dim=1)
-        mix_color, mix_shape, mix_stats = _decode_loss(
-            model, Hmix, batch.target_y, batch.target_shape
-        )
-        usage = assignment.mean(dim=0)
-        usage = usage / usage.sum().clamp_min(1e-8)
-        usage_loss = (usage * torch.log(usage.clamp_min(1e-8))).sum() / math.log(cfg.operator_count)
-        reg = model.operator_bank.regularization()
-        trust = model.operator_bank.trust_region(rule)
-        trust_penalty = (
-            cfg.operator_discovery_trust_weight * trust["transport_kl"]
-            + cfg.fast_gate_penalty_weight * trust["gate_mean"]
-        )
-        discovery_loss = (
-            soft_latent
-            + cfg.operator_discovery_grid_weight * (mix_color + cfg.shape_weight * mix_shape)
-            + cfg.operator_discovery_usage_weight * usage_loss
-            + cfg.operator_discovery_reg_weight * reg
-            + trust_penalty
-        )
-        op_discovery_opt.zero_grad(set_to_none=True)
-        discovery_loss.backward()
-        torch.nn.utils.clip_grad_norm_(op_discovery_params, cfg.grad_clip)
-        op_discovery_opt.step()
-        if step == 1 or step % cfg.diagnostic_every == 0 or step == cfg.operator_discovery_steps:
-            with torch.no_grad():
-                best_err = per_op_err.min(dim=1).values.mean()
-                current_err = (Hq - Ht).pow(2).mean(dim=(1, 2)).mean()
-                improve_frac = (per_op_err.min(dim=1).values < (Hq - Ht).pow(2).mean(dim=(1, 2))).float().mean()
-                hard_use = int(torch.unique(per_op_err.argmin(dim=1)).numel())
-            fast_diag = model.operator_bank.diagnostics(rule)
-            print(
-                f"arc opdiscover step={step:04d} loss={discovery_loss.item():.4f} "
-                f"bestLat={best_err.item():.4f} baseLat={current_err.item():.4f} "
-                f"improve={improve_frac.item():.3f} mixPix={mix_stats['pixel_acc'].item():.3f} "
-                f"fgAcc={mix_stats['foreground_acc'].item():.3f} usedOps={hard_use}/{cfg.operator_count} "
-                f"fastGate={fast_diag['fast_gate'].item():.3f} "
-                f"fastDelta={fast_diag['fast_delta_rms'].item():.4f} "
-                f"fastKL={fast_diag['transport_kl'].item():.4f} tau={tau:.3f}"
+                f"pixelAcc={stats['pixel_acc'].item():.3f} "
+                f"fgAcc={stats['foreground_acc'].item():.3f} "
+                f"shapeAcc={stats['shape_acc'].item():.3f} "
+                f"latent={latent_loss.item():.4f}"
             )
 
         if val_data is not None and cfg.eval_every > 0 and step % cfg.eval_every == 0:
-            opm = _evaluate_operator_discovery(model, val_data, cfg, device)
+            m = evaluate_arc_direct(model, val_data, limit=cfg.eval_tasks, device=device)
+            score = m["exact"] + 0.10 * m["pixel_acc"]
             print(
-                f"arc opdiscover val step={step:04d} bestLat={opm['best_lat']:.4f} "
-                f"baseLat={opm['base_lat']:.4f} improve={opm['improve']:.3f} "
-                f"pixel={opm['pixel']:.3f}"
+                f"arc direct val step={step:04d} exact={m['exact']:.3f} "
+                f"pixel={m['pixel_acc']:.3f} shape={m['shape_acc']:.3f}"
             )
-            if opm["score"] > best_operator_score:
-                best_operator_score = opm["score"]
-                best_operator_state = copy.deepcopy(model.operator_bank.state_dict())
-                best_operator_step = step
+            if score > best_direct_score:
+                best_direct_score = score
+                best_direct = copy.deepcopy(model.state_dict())
 
-    if best_operator_state is not None:
-        model.operator_bank.load_state_dict(best_operator_state, strict=True)
-        print(f"ARC-v1 restored best operator-discovery checkpoint from step={best_operator_step}")
+    if best_direct is not None:
+        model.load_state_dict(best_direct, strict=True)
+        print(f"ARC recursive-v1 restored best direct score={best_direct_score:.4f}")
 
-    operator_order = _rank_discovered_operators(
-        model, val_data if val_data is not None else train_data, cfg, device
+    # Phase C: recursive DeltaNet reasoning.
+    # Preserve the best direct/meta representation. The recurrent adapter must
+    # improve it instead of rewriting the entire model.
+    _set_requires_grad(model, False)
+    _set_requires_grad(model.recursive_cell, True)
+
+    recursive_param_groups = [
+        {"params": list(model.recursive_cell.parameters()), "lr": cfg.recursive_lr},
+    ]
+    if getattr(cfg, "recursive_unfreeze_rule_encoder", False):
+        _set_requires_grad(model.rule_encoder, True)
+        _set_requires_grad(model.query_rule_refiner, True)
+        recursive_param_groups.append({
+            "params": list(model.rule_encoder.parameters())
+                    + list(model.query_rule_refiner.parameters()),
+            "lr": cfg.recursive_lr * cfg.recursive_rule_lr_scale,
+        })
+
+    recursive_opt = torch.optim.AdamW(
+        recursive_param_groups, weight_decay=cfg.weight_decay
     )
     print(
-        "ARC-v1 discovered operator priority="
-        + str(operator_order.detach().cpu().tolist())
+        "ARC recursive-v2 frozen base: training recursive_cell"
+        + (" + low-LR rule encoder" if cfg.recursive_unfreeze_rule_encoder else "")
     )
+    best_recursive = None
+    best_recursive_score = -1.0
+    best_recursive_step = None
 
-    # ------------------------------------------------------------------
-    # Phase D: freeze task inference and learn progressively deeper programs
-    # over the discovered ARC operator vocabulary.
-    # ------------------------------------------------------------------
-    # Task inference is intentionally frozen here.  The previous run let the
-    # predicted goal drift while the controller was learning, which made the
-    # planning target non-stationary.
-    base_params = (
-        list(model.arc_program_controller.parameters())
-        + list(model.arc_program_value.parameters())
-        + list(model.program_blend.parameters())
-    )
-    op_params = list(model.operator_bank.parameters())
-    program_opt = torch.optim.AdamW(
-        [
-            {"params": base_params, "lr": cfg.program_lr},
-            {"params": op_params, "lr": cfg.operator_lr},
-        ],
-        weight_decay=cfg.weight_decay,
-    )
-
-    best_score = -1.0
-    best_program_state = None
-    best_program_step = None
-    last_stage = None
     for step in range(1, cfg.program_steps + 1):
         model.train()
         batch = train_data.sample_batch(cfg.batch_size, device)
+
         rule = model.encode_rule(
             batch.demos_x, batch.demos_y,
             batch.demos_x_shapes, batch.demos_y_shapes, batch.demo_mask,
         )
-        with torch.no_grad():
-            Hq = model.encode_grid(batch.query_x, batch.query_shape)
-            Ht = model.encode_grid(batch.target_y, batch.target_shape)
+        Hq = model.encode_grid(batch.query_x, batch.query_shape)
         rule = model.condition_rule_on_query(rule, Hq)
+        Ht = model.encode_grid(batch.target_y, batch.target_shape).detach()
 
-        # Crucially, this goal is available at inference: demos + query only.
-        Hgoal = model.predict_goal(Hq, rule)
-        goal_consistency_loss = (Hgoal - Ht).pow(2).mean()
-
-        progress = (step - 1) / max(cfg.program_steps - 1, 1)
-        temp = cfg.gumbel_temp_start * (1.0 - progress) + cfg.gumbel_temp_end * progress
-        stage_idx, active_ops, stage_depth = _program_stage(cfg, step)
-        if stage_idx != last_stage:
-            print(
-                f"ARC-v1 entering program stage {stage_idx + 1}: "
-                f"activeOps={active_ops} maxDepth={stage_depth} temp={temp:.3f}"
-            )
-            last_stage = stage_idx
-
-        active_indices = operator_order[:active_ops]
-        Hp, action_w, value_preds, trace = model.rollout_program(
-            Hq,
-            rule,
-            goal_H=Hgoal,
-            max_steps=stage_depth,
-            active_operator_count=active_ops,
-            active_operator_indices=active_indices,
-            temperature=temp,
-            hard=True,
-            greedy=False,
-            return_trace=True,
+        Hr, info = model.recursive_reason(
+            Hq, rule, steps=cfg.recursive_steps, return_trace=True
         )
-        latent_loss = (Hp - Ht).pow(2).mean()
-        color_loss, shape_loss, stats = _decode_loss(model, Hp, batch.target_y, batch.target_shape)
+        Hd = info["states"][0]
 
-        # Preserve/improve the goal predictor instead of discarding it when
-        # program training starts.
-        direct_color, direct_shape, direct_stats = _decode_loss(
-            model, Hgoal, batch.target_y, batch.target_shape
+        color_loss, shape_loss, stats = _decode_loss(
+            model, Hr, batch.target_y, batch.target_shape
         )
-        direct_aux = direct_color + cfg.shape_weight * direct_shape
+        final_latent = (Hr - Ht).pow(2).mean()
+        direct_err = (Hd - Ht).pow(2).mean(dim=(1, 2))
+        final_err = (Hr - Ht).pow(2).mean(dim=(1, 2))
+        consistency = torch.relu(final_err - direct_err).mean()
 
-        # Training-only target-aware policy teacher. At each visited state,
-        # choose the active operator that most improves true target-latent error;
-        # choose STOP only when no operator clears a small improvement margin.
-        # This directly addresses the v1.1 deep-stage STOP collapse without
-        # leaking the target at inference (the teacher is absent there).
-        oracle_losses = []
-        oracle_stop_fracs = []
-        for state_t, logits_t, halted_t in zip(
-            trace["states_before"], trace["logits"], trace["halted_before"]
-        ):
-            with torch.no_grad():
-                op_states = model.operator_bank.apply_all(state_t.detach(), rule.detach())[:, active_indices]
-                current_err = (state_t.detach() - Ht).pow(2).mean(dim=(1, 2))
-                op_err = (op_states - Ht[:, None]).pow(2).mean(dim=(2, 3))
-                best_err, best_local_idx = op_err.min(dim=1)
-                best_idx = active_indices[best_local_idx]
-                improvement = current_err - best_err
-                teacher = torch.where(
-                    improvement > cfg.oracle_improvement_margin,
-                    best_idx,
-                    torch.full_like(best_idx, cfg.operator_count),
-                )
-                was_halted = halted_t.squeeze(-1).squeeze(-1) > 0.5
-                teacher = torch.where(
-                    was_halted,
-                    torch.full_like(teacher, cfg.operator_count),
-                    teacher,
-                )
-                oracle_stop_fracs.append((teacher == cfg.operator_count).float().mean())
-            oracle_losses.append(F.cross_entropy(logits_t, teacher))
-        oracle_policy_loss = torch.stack(oracle_losses).mean()
-        oracle_stop_frac = torch.stack(oracle_stop_fracs).mean()
+        intermediate = torch.zeros((), device=device)
+        if len(info["states"]) > 2:
+            losses = [
+                (s - Ht).pow(2).mean()
+                for s in info["states"][1:-1]
+            ]
+            intermediate = torch.stack(losses).mean()
 
-        # Composition-aware teacher: for each visited state, search a shallow
-        # beam of short operator programs and supervise the first action of the
-        # best reachable program. This avoids teaching purely myopic moves.
-        beam_losses = []
-        beam_stop_fracs = []
-        for t, (state_t, logits_t, halted_t) in enumerate(zip(
-            trace["states_before"], trace["logits"], trace["halted_before"]
-        )):
-            remaining = max(stage_depth - t, 1)
-            lookahead = min(int(cfg.beam_teacher_lookahead), remaining)
-            teacher = _beam_teacher_actions(
-                model, state_t.detach(), rule.detach(), Ht, active_indices,
-                lookahead=lookahead, width=cfg.beam_teacher_width,
+        fast_reg = info["fast_state"].pow(2).mean()
+        halt_loss = torch.zeros((), device=device)
+        if info["halt_logits"]:
+            # Encourage confidence only when recursion beats the direct state.
+            improved = (final_err.detach() < direct_err.detach()).float()
+            halt_target = improved
+            halt_loss = torch.nn.functional.binary_cross_entropy_with_logits(
+                info["halt_logits"][-1], halt_target
             )
-            was_halted = halted_t.squeeze(-1).squeeze(-1) > 0.5
-            teacher = torch.where(
-                was_halted,
-                torch.full_like(teacher, cfg.operator_count),
-                teacher,
-            )
-            beam_losses.append(F.cross_entropy(logits_t, teacher))
-            beam_stop_fracs.append((teacher == cfg.operator_count).float().mean())
-        beam_policy_loss = torch.stack(beam_losses).mean()
-        beam_stop_frac = torch.stack(beam_stop_fracs).mean()
 
-        non_stop = action_w[:, :, : cfg.operator_count].sum(dim=-1)
-        length_loss = non_stop.mean()
-
-        # Balance only the currently available vocabulary. This encourages
-        # specialization without forcing probability onto masked operators.
-        usage = action_w[:, :, active_indices].mean(dim=(0, 1))
-        usage = usage / usage.sum().clamp_min(1e-8)
-        if active_ops > 1:
-            usage_balance_loss = (
-                usage * torch.log(usage.clamp_min(1e-8))
-            ).sum() / math.log(active_ops)
-        else:
-            usage_balance_loss = torch.zeros((), device=device)
-
-        per_sample_latent = (Hp.detach() - Ht).pow(2).mean(dim=(1, 2))
-        value_target = torch.exp(-4.0 * per_sample_latent).clamp(0.0, 1.0)
-        value_loss = torch.stack([F.mse_loss(v, value_target) for v in value_preds]).mean()
-
-        op_reg = model.operator_bank.regularization()
-        fast_trust = model.operator_bank.trust_region(rule)
-        fast_trust_loss = (
-            cfg.fast_transport_kl_weight * fast_trust["transport_kl"]
-            + cfg.fast_gate_penalty_weight * fast_trust["gate_mean"]
-        )
+        loo_final, loo_improve, loo_stats = _recursive_loo_auxiliary(model, batch)
         loss = (
-            cfg.latent_weight * latent_loss
-            + cfg.grid_weight * color_loss
-            + cfg.shape_weight * shape_loss
-            + cfg.length_weight * length_loss
-            + cfg.operator_reg_weight * op_reg
-            + cfg.usage_balance_weight * usage_balance_loss
-            + cfg.value_weight * value_loss
-            + cfg.oracle_policy_weight * oracle_policy_loss
-            + cfg.beam_teacher_weight * beam_policy_loss
-            + fast_trust_loss
+            cfg.recursive_grid_weight * (color_loss + cfg.shape_weight * shape_loss)
+            + cfg.recursive_latent_weight * final_latent
+            + cfg.recursive_intermediate_weight * intermediate
+            + cfg.recursive_consistency_weight * consistency
+            + cfg.recursive_fast_reg_weight * fast_reg
+            + cfg.halt_weight * halt_loss
         )
+        if loo_final is not None:
+            loss = (
+                loss
+                + cfg.recursive_loo_weight * loo_final
+                + cfg.recursive_step_improvement_weight * loo_improve
+            )
 
-        program_opt.zero_grad(set_to_none=True)
+        recursive_opt.zero_grad(set_to_none=True)
         loss.backward()
-        torch.nn.utils.clip_grad_norm_(base_params + op_params, cfg.grad_clip)
-        program_opt.step()
+        trainable = [p for p in model.parameters() if p.requires_grad]
+        torch.nn.utils.clip_grad_norm_(trainable, cfg.grad_clip)
+        recursive_opt.step()
 
         if step == 1 or step % cfg.diagnostic_every == 0 or step == cfg.program_steps:
-            with torch.no_grad():
-                chosen = action_w.argmax(dim=-1)
-                stop_frac = (chosen == cfg.operator_count).float().mean()
-                op_unique = (
-                    int(torch.unique(chosen[chosen < cfg.operator_count]).numel())
-                    if (chosen < cfg.operator_count).any() else 0
-                )
-                program_len = (chosen != cfg.operator_count).float().sum(dim=1).mean()
-            fast_diag = model.operator_bank.diagnostics(rule)
-            blend_mean = trace["blend_gate"].mean()
+            last_stats = info["stats"][-1]
             print(
-                f"arc program step={step:04d} loss={loss.item():.4f} "
-                f"latent={latent_loss.item():.4f} goalLat={goal_consistency_loss.item():.4f} "
-                f"cellCE={color_loss.item():.4f} pixelAcc={stats['pixel_acc'].item():.3f} "
+                f"arc recursive step={step:04d} loss={loss.item():.4f} "
+                f"pixelAcc={stats['pixel_acc'].item():.3f} "
                 f"fgAcc={stats['foreground_acc'].item():.3f} "
-                f"directPix={direct_stats['pixel_acc'].item():.3f} "
-                f"shapeAcc={stats['shape_acc'].item():.3f} stop={stop_frac.item():.3f} "
-                f"oracleCE={oracle_policy_loss.item():.3f} oracleStop={oracle_stop_frac.item():.3f} "
-                f"beamCE={beam_policy_loss.item():.3f} beamStop={beam_stop_frac.item():.3f} "
-                f"progLen={program_len.item():.2f} usedOps={op_unique}/{active_ops} "
-                f"blend={blend_mean.item():.3f} fastGate={fast_diag['fast_gate'].item():.3f} "
-                f"fastKL={fast_diag['transport_kl'].item():.4f} "
-                f"depth={stage_depth} temp={temp:.3f}"
+                f"shapeAcc={stats['shape_acc'].item():.3f} "
+                f"latent={final_latent.item():.4f} "
+                f"cons={consistency.item():.4f} "
+                f"fastNorm={last_stats['fast_norm'].mean().item():.4f} "
+                f"eta={last_stats['eta'].mean().item():.3f} "
+                f"gate={last_stats['gate'].mean().item():.3f} "
+                f"halt={last_stats['halt_prob'].mean().item():.3f} "
+                f"loo0={loo_stats.get('loo_initial', float('nan')):.3f} "
+                f"looN={loo_stats.get('loo_final', float('nan')):.3f} "
+                f"looImprove={(loo_improve.item() if loo_improve is not None else float('nan')):.4f}"
             )
 
         if val_data is not None and cfg.eval_every > 0 and step % cfg.eval_every == 0:
-            metrics = evaluate_arc(model, val_data, limit=cfg.eval_tasks, device=device)
-            score = metrics["exact"] + 0.10 * metrics["pixel_acc"]
+            m = evaluate_arc(model, val_data, limit=cfg.eval_tasks, device=device)
+            score = m["exact"] + 0.10 * m["pixel_acc"]
             print(
-                f"arc val step={step:04d} exact={metrics['exact']:.3f} "
-                f"pixel={metrics['pixel_acc']:.3f} shape={metrics['shape_acc']:.3f} "
-                f"greedyPixel={metrics.get('greedy_pixel_acc', metrics['pixel_acc']):.3f} "
-                f"demoFit={metrics.get('search_demo_fit', 0.0):.3f} "
-                f"directPixel={metrics['direct_pixel_acc']:.3f} "
-                f"directShape={metrics['direct_shape_acc']:.3f}"
+                f"arc recursive val step={step:04d} exact={m['exact']:.3f} "
+                f"pixel={m['pixel_acc']:.3f} shape={m['shape_acc']:.3f} "
+                f"directPixel={m['direct_pixel_acc']:.3f} "
+                f"gain={m['recursive_gain']:+.3f}"
             )
-            if score > best_score:
-                best_score = score
-                best_program_state = copy.deepcopy(model.state_dict())
-                best_program_step = step
+            if score > best_recursive_score:
+                best_recursive_score = score
+                best_recursive_step = step
+                best_recursive = copy.deepcopy(model.state_dict())
                 torch.save(
-                    {"model_state_dict": model.state_dict(), "cfg": vars(cfg), "step": step, "metrics": metrics},
+                    {
+                        "model_state_dict": best_recursive,
+                        "cfg": vars(cfg),
+                        "metrics": m,
+                        "arch": ARC_TRAINER_ARCH,
+                    },
                     cfg.arc_best_checkpoint_path,
                 )
-                print(f"saved ARC-v1 best checkpoint: {cfg.arc_best_checkpoint_path}")
 
-    if val_data is not None and cfg.restore_best_at_end and best_program_state is not None:
-        model.load_state_dict(best_program_state, strict=True)
-        print(f"ARC-v1 restored best program checkpoint from step={best_program_step}")
+    if cfg.restore_best_at_end and best_recursive is not None:
+        model.load_state_dict(best_recursive, strict=True)
+        print(f"ARC recursive-v2 restored best checkpoint step={best_recursive_step}")
 
-    # v1.8.1: persist the fully trained/restored ARC model before NEAT starts.
-    # If config discovery/evolution fails, --arc-neat-only can resume from here.
-    pre_neat_metrics = evaluate_arc(model, val_data or train_data, limit=cfg.eval_tasks, device=device)
-    torch.save(
-        {'model_state_dict': model.state_dict(), 'cfg': vars(cfg), 'metrics': pre_neat_metrics},
-        cfg.arc_pre_neat_checkpoint_path,
+    _set_requires_grad(model, True)
+
+    final_metrics = evaluate_arc(
+        model, val_data or train_data, limit=cfg.eval_tasks, device=device
     )
-    print(f'saved ARC-v1 pre-NEAT checkpoint: {cfg.arc_pre_neat_checkpoint_path}')
-
-    # v1.8: once the reusable ARC machinery is trained and stabilized, evolve
-    # only the CPPN-derived base geometry against held-out ARC meta-episodes.
-    # This is Baldwinian in the first experiment: no per-genome gradient update.
-    if getattr(cfg, "arc_neat_enabled", False) and int(getattr(cfg, "arc_neat_generations", 0)) > 0:
-        from sefer.evolution.arc_neat_outer import evolve_arc_cppn
-        neat_result = evolve_arc_cppn(model, val_data, cfg, device)
-        if neat_result is not None:
-            print(
-                f"ARC-v1 ARC-NEAT outer loop complete fitness={neat_result['fitness']:.4f} "
-                f"pixel={neat_result['metrics']['pixel_acc']:.3f} "
-                f"demoFit={neat_result['metrics'].get('search_demo_fit', 0.0):.3f}"
-            )
-
-    final_metrics = evaluate_arc(model, val_data or train_data, limit=cfg.eval_tasks, device=device)
     torch.save(
-        {"model_state_dict": model.state_dict(), "cfg": vars(cfg), "metrics": final_metrics},
+        {
+            "model_state_dict": model.state_dict(),
+            "cfg": vars(cfg),
+            "metrics": final_metrics,
+            "arch": ARC_TRAINER_ARCH,
+        },
         cfg.arc_checkpoint_path,
     )
-    print(f"saved ARC-v1 checkpoint: {cfg.arc_checkpoint_path}")
+    # Preserve the launcher-compatible pre-NEAT name, but it now points to the
+    # recursive model and no NEAT phase is required.
+    if cfg.arc_pre_neat_checkpoint_path != cfg.arc_checkpoint_path:
+        torch.save(
+            {
+                "model_state_dict": model.state_dict(),
+                "cfg": vars(cfg),
+                "metrics": final_metrics,
+                "arch": ARC_TRAINER_ARCH,
+            },
+            cfg.arc_pre_neat_checkpoint_path,
+        )
+
     print(
-        f"ARC-v1 final exact={final_metrics['exact']:.3f} pixel={final_metrics['pixel_acc']:.3f} "
+        f"ARC recursive-v1 final exact={final_metrics['exact']:.3f} "
+        f"pixel={final_metrics['pixel_acc']:.3f} "
         f"shape={final_metrics['shape_acc']:.3f} "
-        f"greedyPixel={final_metrics.get('greedy_pixel_acc', final_metrics['pixel_acc']):.3f} "
-        f"demoFit={final_metrics.get('search_demo_fit', 0.0):.3f} "
-        f"directPixel={final_metrics['direct_pixel_acc']:.3f}"
+        f"directPixel={final_metrics['direct_pixel_acc']:.3f} "
+        f"gain={final_metrics['recursive_gain']:+.3f}"
     )
     return model, final_metrics
 
 
-def load_arc_v1_checkpoint(cfg, path: str | None = None, device: str | torch.device | None = None):
-    """Rebuild ARCReasoner, recreate its adaptive operator bank, then load a checkpoint."""
+def load_arc_v1_checkpoint(cfg, path: str | None = None,
+                           device: str | torch.device | None = None):
     device = torch.device(device or cfg.device)
     model = ARCReasoner(cfg).to(device)
-    from sefer.evolution.arc_neat_outer import restore_arc_cppn
-    restore_arc_cppn(model, cfg)
-    model.ensure_operator_bank()
     payload = torch.load(path or cfg.arc_checkpoint_path, map_location=device)
     model.load_state_dict(payload["model_state_dict"], strict=True)
     model.eval()
