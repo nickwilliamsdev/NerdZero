@@ -1,16 +1,17 @@
 from __future__ import annotations
 
 ARC_TRAINER_PATCH_ID = "arc-scratch-v3-complete"
-ARC_TRAINER_ARCH = "recursive-deltanet-v1-generalization-v2"
+ARC_TRAINER_ARCH = "recursive-deltanet-v1-state-ranker-v6"
 
 import copy
 import random
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 
 from sefer.controllers.arc_reasoner import ARCReasoner
-from sefer.representation.arc_grid import arc_grid_loss
+from sefer.representation.arc_grid import arc_grid_loss, shape_mask
 from sefer.evaluation.arc import evaluate_arc, evaluate_arc_direct
 
 
@@ -30,6 +31,47 @@ def _decode_loss(model, H, target, target_shape):
         balance_mix=model.cfg.color_balance_mix,
     )
     return color_loss, stats["shape_loss"], stats
+
+
+def _per_sample_grid_objective(model, H, target, target_shape):
+    """Per-example decoded grid objective used only to supervise stopping depth."""
+    color_logits, h_logits, w_logits = model.decode_grid(H)
+    mask = shape_mask(target_shape, model.cfg.max_grid_size)
+    per_cell = F.cross_entropy(color_logits, target.long(), reduction="none")
+    denom = mask.flatten(1).sum(dim=1).clamp_min(1)
+    cell = (per_cell * mask.float()).flatten(1).sum(dim=1) / denom
+
+    h_target = (target_shape[:, 0] - 1).clamp(0, model.cfg.max_grid_size - 1)
+    w_target = (target_shape[:, 1] - 1).clamp(0, model.cfg.max_grid_size - 1)
+    shape = (
+        F.cross_entropy(h_logits, h_target.long(), reduction="none")
+        + F.cross_entropy(w_logits, w_target.long(), reduction="none")
+    )
+    return cell + model.cfg.shape_weight * shape
+
+
+def _adaptive_step_losses(model, rule, info, target, target_shape):
+    """Supervise all states and train a task-conditioned best-state ranker."""
+    states = info["states"]
+    if not states:
+        z = torch.zeros((), device=target.device)
+        return None, z, z, None, None
+
+    step_losses = torch.stack(
+        [_per_sample_grid_objective(model, s, target, target_shape) for s in states],
+        dim=1,
+    )
+    best_step_idx = step_losses.detach().argmin(dim=1)
+    rank_logits = model.score_recursive_states(rule, info)
+    rank_loss = F.cross_entropy(rank_logits, best_step_idx)
+
+    # Direct state is frozen; recursive states receive auxiliary grid supervision.
+    per_step_loss = (
+        step_losses[:, 1:].mean()
+        if step_losses.shape[1] > 1 else step_losses.mean()
+    )
+    return step_losses, rank_loss, per_step_loss, best_step_idx, rank_logits
+
 
 
 def _loo_auxiliary(model, batch):
@@ -73,71 +115,103 @@ def _set_requires_grad(module, value: bool):
 
 
 def _recursive_loo_auxiliary(model, batch):
-    """Train recursion on a demonstration withheld from the task context.
-
-    The base encoder/direct predictor remain frozen during this phase. The
-    recursive cell must improve the held-out demonstration prediction over
-    successive reasoning steps.
-    """
+    """Train recursion on multiple randomly held-out demonstrations per task."""
     counts = batch.demo_mask.sum(dim=1)
-    valid_rows = torch.nonzero(counts >= 2, as_tuple=False).flatten()
-    if valid_rows.numel() == 0:
+    eligible_rows = torch.nonzero(counts >= 2, as_tuple=False).flatten()
+    if eligible_rows.numel() == 0:
         return None, None, {}
 
-    held = []
-    for b in valid_rows.tolist():
-        held.append(int(torch.nonzero(batch.demo_mask[b], as_tuple=False)[0, 0]))
-    held = torch.tensor(held, device=batch.demo_mask.device, dtype=torch.long)
+    max_permutations = 2
+    all_final_losses = []
+    all_improve_losses = []
+    all_initial_values = []
+    all_final_values = []
+    all_latent_initial = []
+    all_latent_final = []
 
-    dx = batch.demos_x[valid_rows].clone()
-    dy = batch.demos_y[valid_rows].clone()
-    dxs = batch.demos_x_shapes[valid_rows].clone()
-    dys = batch.demos_y_shapes[valid_rows].clone()
-    dm = batch.demo_mask[valid_rows].clone()
+    for b in eligible_rows.tolist():
+        valid_demo_ids = torch.nonzero(
+            batch.demo_mask[b], as_tuple=False
+        ).flatten()
 
-    rows = torch.arange(valid_rows.numel(), device=dm.device)
-    q = dx[rows, held]
-    qs = dxs[rows, held]
-    y = dy[rows, held]
-    ys = dys[rows, held]
-    dm[rows, held] = False
+        perm = valid_demo_ids[
+            torch.randperm(valid_demo_ids.numel(), device=valid_demo_ids.device)
+        ]
+        held_ids = perm[:min(max_permutations, perm.numel())]
 
-    rule = model.encode_rule(dx, dy, dxs, dys, dm)
-    Hq = model.encode_grid(q, qs)
-    rule = model.condition_rule_on_query(rule, Hq)
-    Ht = model.encode_grid(y, ys).detach()
+        for held_id_t in held_ids:
+            held_id = int(held_id_t.item())
 
-    _, info = model.recursive_reason(
-        Hq, rule, steps=model.cfg.recursive_steps, return_trace=True
-    )
+            dx = batch.demos_x[b:b + 1].clone()
+            dy = batch.demos_y[b:b + 1].clone()
+            dxs = batch.demos_x_shapes[b:b + 1].clone()
+            dys = batch.demos_y_shapes[b:b + 1].clone()
+            dm = batch.demo_mask[b:b + 1].clone()
 
-    step_losses = []
-    step_latents = []
-    for state in info["states"]:
-        c, s, _ = _decode_loss(model, state, y, ys)
-        latent = (state - Ht).pow(2).mean()
-        total = c + model.cfg.shape_weight * s + model.cfg.recursive_latent_weight * latent
-        step_losses.append(total)
-        step_latents.append(latent)
+            q = dx[:, held_id]
+            qs = dxs[:, held_id]
+            y = dy[:, held_id]
+            ys = dys[:, held_id]
+            dm[:, held_id] = False
 
-    final_loss = step_losses[-1]
-    margin = float(model.cfg.recursive_step_improvement_margin)
-    improve_terms = [
-        torch.relu(next_loss - prev_loss + margin)
-        for prev_loss, next_loss in zip(step_losses[:-1], step_losses[1:])
-    ]
-    improvement_loss = (
-        torch.stack(improve_terms).mean()
-        if improve_terms else torch.zeros((), device=final_loss.device)
-    )
+            rule = model.encode_rule(dx, dy, dxs, dys, dm)
+            Hq = model.encode_grid(q, qs)
+            rule = model.condition_rule_on_query(rule, Hq)
+            Ht = model.encode_grid(y, ys).detach()
+
+            _, info = model.recursive_reason(
+                Hq, rule, steps=model.cfg.recursive_steps, return_trace=True
+            )
+
+            step_losses = []
+            step_latent = []
+            for state in info["states"]:
+                c, s, _ = _decode_loss(model, state, y, ys)
+                latent = (state - Ht).pow(2).mean()
+                decoded = c + model.cfg.shape_weight * s
+                step_losses.append(
+                    decoded + model.cfg.recursive_latent_weight * latent
+                )
+                step_latent.append(latent)
+
+            final_loss = step_losses[-1]
+
+            improve_terms = []
+            margin = float(model.cfg.recursive_step_improvement_margin)
+            for prev_loss, next_loss in zip(step_losses[:-1], step_losses[1:]):
+                improve_terms.append(
+                    torch.relu(next_loss - prev_loss + margin)
+                )
+
+            if improve_terms:
+                improvement_loss = torch.stack(improve_terms).mean()
+            else:
+                improvement_loss = torch.zeros(
+                    (), device=final_loss.device, dtype=final_loss.dtype
+                )
+
+            all_final_losses.append(final_loss)
+            all_improve_losses.append(improvement_loss)
+            all_initial_values.append(step_losses[0].detach())
+            all_final_values.append(step_losses[-1].detach())
+            all_latent_initial.append(step_latent[0].detach())
+            all_latent_final.append(step_latent[-1].detach())
+
+    if not all_final_losses:
+        return None, None, {}
+
+    final_loss = torch.stack(all_final_losses).mean()
+    improvement_loss = torch.stack(all_improve_losses).mean()
 
     stats = {
-        "loo_initial": float(step_losses[0].detach().item()),
-        "loo_final": float(step_losses[-1].detach().item()),
-        "loo_latent_initial": float(step_latents[0].detach().item()),
-        "loo_latent_final": float(step_latents[-1].detach().item()),
+        "loo_initial": float(torch.stack(all_initial_values).mean().item()),
+        "loo_final": float(torch.stack(all_final_values).mean().item()),
+        "loo_latent_initial": float(torch.stack(all_latent_initial).mean().item()),
+        "loo_latent_final": float(torch.stack(all_latent_final).mean().item()),
+        "loo_permutations": len(all_final_losses),
     }
     return final_loss, improvement_loss, stats
+
 
 
 def train_arc_v1(cfg, train_data, val_data=None):
@@ -250,9 +324,14 @@ def train_arc_v1(cfg, train_data, val_data=None):
     # improve it instead of rewriting the entire model.
     _set_requires_grad(model, False)
     _set_requires_grad(model.recursive_cell, True)
+    _set_requires_grad(model.state_ranker, True)
 
     recursive_param_groups = [
-        {"params": list(model.recursive_cell.parameters()), "lr": cfg.recursive_lr},
+        {
+            "params": list(model.recursive_cell.parameters())
+                    + list(model.state_ranker.parameters()),
+            "lr": cfg.recursive_lr,
+        },
     ]
     if getattr(cfg, "recursive_unfreeze_rule_encoder", False):
         _set_requires_grad(model.rule_encoder, True)
@@ -267,12 +346,14 @@ def train_arc_v1(cfg, train_data, val_data=None):
         recursive_param_groups, weight_decay=cfg.weight_decay
     )
     print(
-        "ARC recursive-v2 frozen base: training recursive_cell"
+        "ARC recursive-v6 frozen base: training recursive_cell + state_ranker"
         + (" + low-LR rule encoder" if cfg.recursive_unfreeze_rule_encoder else "")
     )
     best_recursive = None
     best_recursive_score = -1.0
     best_recursive_step = None
+    recursive_bad_evals = 0
+    recursive_best_gain = float("-inf")
 
     for step in range(1, cfg.program_steps + 1):
         model.train()
@@ -308,14 +389,9 @@ def train_arc_v1(cfg, train_data, val_data=None):
             intermediate = torch.stack(losses).mean()
 
         fast_reg = info["fast_state"].pow(2).mean()
-        halt_loss = torch.zeros((), device=device)
-        if info["halt_logits"]:
-            # Encourage confidence only when recursion beats the direct state.
-            improved = (final_err.detach() < direct_err.detach()).float()
-            halt_target = improved
-            halt_loss = torch.nn.functional.binary_cross_entropy_with_logits(
-                info["halt_logits"][-1], halt_target
-            )
+        step_grid_losses, rank_loss, per_step_grid_loss, best_step_idx, rank_logits = _adaptive_step_losses(
+            model, rule, info, batch.target_y, batch.target_shape
+        )
 
         loo_final, loo_improve, loo_stats = _recursive_loo_auxiliary(model, batch)
         loss = (
@@ -324,7 +400,8 @@ def train_arc_v1(cfg, train_data, val_data=None):
             + cfg.recursive_intermediate_weight * intermediate
             + cfg.recursive_consistency_weight * consistency
             + cfg.recursive_fast_reg_weight * fast_reg
-            + cfg.halt_weight * halt_loss
+            + cfg.adaptive_halt_weight * rank_loss
+            + cfg.recursive_per_step_grid_weight * per_step_grid_loss
         )
         if loo_final is not None:
             loss = (
@@ -354,18 +431,29 @@ def train_arc_v1(cfg, train_data, val_data=None):
                 f"halt={last_stats['halt_prob'].mean().item():.3f} "
                 f"loo0={loo_stats.get('loo_initial', float('nan')):.3f} "
                 f"looN={loo_stats.get('loo_final', float('nan')):.3f} "
-                f"looImprove={(loo_improve.item() if loo_improve is not None else float('nan')):.4f}"
+                f"looImprove={(loo_improve.item() if loo_improve is not None else float('nan')):.4f} "
+                f"looPerms={loo_stats.get('loo_permutations', 0)} "
+                f"bestStep={(best_step_idx.float().mean().item() + 1.0 if best_step_idx is not None else float('nan')):.2f} "
+                f"rankCE={rank_loss.item():.4f}"
             )
 
         if val_data is not None and cfg.eval_every > 0 and step % cfg.eval_every == 0:
             m = evaluate_arc(model, val_data, limit=cfg.eval_tasks, device=device)
-            score = m["exact"] + 0.10 * m["pixel_acc"]
+            score = (
+                m["exact"]
+                + 0.10 * m["adaptive_pixel_acc"]
+                + cfg.recursive_gain_score_weight * m["recursive_gain"]
+            )
             print(
                 f"arc recursive val step={step:04d} exact={m['exact']:.3f} "
-                f"pixel={m['pixel_acc']:.3f} shape={m['shape_acc']:.3f} "
+                f"adaptivePixel={m['adaptive_pixel_acc']:.3f} "
+                f"fixedPixel={m['fixed_pixel_acc']:.3f} "
+                f"oraclePixel={m['oracle_pixel_acc']:.3f} "
                 f"directPixel={m['direct_pixel_acc']:.3f} "
-                f"gain={m['recursive_gain']:+.3f}"
+                f"gain={m['recursive_gain']:+.3f} "
+                f"chosenStep={m['avg_chosen_step']:.2f} score={score:.4f}"
             )
+
             if score > best_recursive_score:
                 best_recursive_score = score
                 best_recursive_step = step
@@ -380,9 +468,27 @@ def train_arc_v1(cfg, train_data, val_data=None):
                     cfg.arc_best_checkpoint_path,
                 )
 
+            gain = float(m["recursive_gain"])
+            if gain > recursive_best_gain + cfg.recursive_early_stop_min_delta:
+                recursive_best_gain = gain
+                recursive_bad_evals = 0
+            else:
+                recursive_bad_evals += 1
+
+            if (
+                step >= cfg.recursive_min_steps_before_stop
+                and recursive_bad_evals >= cfg.recursive_early_stop_patience
+            ):
+                print(
+                    f"ARC recursive-v3 early stop step={step} "
+                    f"bestGain={recursive_best_gain:+.3f} "
+                    f"badEvals={recursive_bad_evals}"
+                )
+                break
+
     if cfg.restore_best_at_end and best_recursive is not None:
         model.load_state_dict(best_recursive, strict=True)
-        print(f"ARC recursive-v2 restored best checkpoint step={best_recursive_step}")
+        print(f"ARC recursive-v3 restored best checkpoint step={best_recursive_step}")
 
     _set_requires_grad(model, True)
 
@@ -412,11 +518,13 @@ def train_arc_v1(cfg, train_data, val_data=None):
         )
 
     print(
-        f"ARC recursive-v1 final exact={final_metrics['exact']:.3f} "
-        f"pixel={final_metrics['pixel_acc']:.3f} "
-        f"shape={final_metrics['shape_acc']:.3f} "
+        f"ARC adaptive-v5 final exact={final_metrics['exact']:.3f} "
+        f"adaptivePixel={final_metrics['adaptive_pixel_acc']:.3f} "
+        f"fixedPixel={final_metrics['fixed_pixel_acc']:.3f} "
+        f"oraclePixel={final_metrics['oracle_pixel_acc']:.3f} "
         f"directPixel={final_metrics['direct_pixel_acc']:.3f} "
-        f"gain={final_metrics['recursive_gain']:+.3f}"
+        f"gain={final_metrics['recursive_gain']:+.3f} "
+        f"chosenStep={final_metrics['avg_chosen_step']:.2f}"
     )
     return model, final_metrics
 

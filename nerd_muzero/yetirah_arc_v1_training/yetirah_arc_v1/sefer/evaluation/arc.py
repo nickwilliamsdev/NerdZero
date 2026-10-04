@@ -2,7 +2,7 @@ from __future__ import annotations
 
 # Kept for compatibility with the current launcher.
 ARC_EVAL_PATCH_ID = "v1.7-demo-consistency-search"
-ARC_EVAL_ARCH = "recursive-deltanet-v1"
+ARC_EVAL_ARCH = "recursive-deltanet-v1-state-ranker-v6"
 
 from typing import Any, Dict
 import numpy as np
@@ -67,30 +67,31 @@ def predict_arc(model, demos, query_x, device=None,
     rule = model.encode_rule(dx, dy, dxs, dys, dm)
     Hq = model.encode_grid(q, qs)
     rule = model.condition_rule_on_query(rule, Hq)
-    Hr, info = model.recursive_reason(
+    _, info = model.recursive_reason(
         Hq, rule, steps=cfg.recursive_steps, return_trace=True
     )
 
-    recursive_grid = _decode_grid(model, Hr)
-    direct_grid = _decode_grid(model, info["direct_state"])
+    adaptive_state, chosen, rank_scores = model.select_ranked_state(rule, info)
+    adaptive_grid = _decode_grid(model, adaptive_state)
+    direct_grid = _decode_grid(model, info["states"][0])
+    fixed_grid = _decode_grid(model, info["states"][-1])
+
     details = {
-        "mode": "recursive_deltanet",
-        "steps": cfg.recursive_steps,
+        "mode": "adaptive_recursive_deltanet",
+        "chosen_step": int(chosen[0].item()),
+        "rank_scores": rank_scores[0].detach().cpu().tolist(),
         "halt_probs": [
             float(torch.sigmoid(x).item()) for x in info["halt_logits"]
         ],
-        "fast_norm": (
-            float(info["stats"][-1]["fast_norm"].mean().item())
-            if info["stats"] else 0.0
-        ),
+        "fixed_grid": fixed_grid,
         "direct_grid": direct_grid,
     }
 
     if return_details:
-        return recursive_grid, [], direct_grid, details
+        return adaptive_grid, [], direct_grid, details
     if return_direct:
-        return recursive_grid, [], direct_grid
-    return recursive_grid, []
+        return adaptive_grid, [], direct_grid
+    return adaptive_grid, []
 
 
 @torch.no_grad()
@@ -133,9 +134,13 @@ def evaluate_arc(model, dataset, limit: int = 64, device=None) -> Dict[str, Any]
     was_training = model.training
     model.eval()
 
-    exact = pixel = shape = 0.0
+    adaptive_exact = adaptive_pixel = adaptive_shape = 0.0
+    fixed_exact = fixed_pixel = fixed_shape = 0.0
     direct_exact = direct_pixel = direct_shape = 0.0
+    oracle_exact = oracle_pixel = oracle_shape = 0.0
     step_pixel_sum = [0.0 for _ in range(model.cfg.recursive_steps + 1)]
+    chosen_step_sum = 0.0
+    oracle_step_sum = 0.0
     n = 0
 
     for _, demos, qx, target in dataset.evaluation_episodes(limit=limit):
@@ -145,25 +150,49 @@ def evaluate_arc(model, dataset, limit: int = 64, device=None) -> Dict[str, Any]
         rule = model.encode_rule(dx, dy, dxs, dys, dm)
         Hq = model.encode_grid(q, qs)
         rule = model.condition_rule_on_query(rule, Hq)
-        Hr, info = model.recursive_reason(
+        _, info = model.recursive_reason(
             Hq, rule, steps=model.cfg.recursive_steps, return_trace=True
         )
 
-        pred = _decode_grid(model, Hr)
+        adaptive_state, chosen, rank_scores = model.select_ranked_state(rule, info)
+        adaptive_pred = _decode_grid(model, adaptive_state)
+        fixed_pred = _decode_grid(model, info["states"][-1])
         direct_pred = _decode_grid(model, info["states"][0])
-        e, p, s = _grid_scores(pred, target)
-        de, dp, ds = _grid_scores(direct_pred, target)
 
-        exact += e
-        pixel += p
-        shape += s
+        ae, ap, ash = _grid_scores(adaptive_pred, target)
+        fe, fp, fsh = _grid_scores(fixed_pred, target)
+        de, dp, dsh = _grid_scores(direct_pred, target)
+
+        adaptive_exact += ae
+        adaptive_pixel += ap
+        adaptive_shape += ash
+        fixed_exact += fe
+        fixed_pixel += fp
+        fixed_shape += fsh
         direct_exact += de
         direct_pixel += dp
-        direct_shape += ds
+        direct_shape += dsh
+        chosen_step_sum += float(chosen[0].item())
 
+        # Oracle is diagnostic only: choose the target-best decoded state,
+        # including step 0/direct. It is never used to make a real prediction.
+        state_scores = []
+        state_triplets = []
         for i, state in enumerate(info["states"]):
-            _, sp, _ = _grid_scores(_decode_grid(model, state), target)
-            step_pixel_sum[i] += sp
+            triplet = _grid_scores(_decode_grid(model, state), target)
+            state_triplets.append(triplet)
+            step_pixel_sum[i] += triplet[1]
+            state_scores.append((triplet[0], triplet[1], triplet[2]))
+
+        oracle_idx = max(
+            range(len(state_scores)),
+            key=lambda i: (state_scores[i][0], state_scores[i][1], state_scores[i][2]),
+        )
+        oe, op, osh = state_triplets[oracle_idx]
+        oracle_exact += oe
+        oracle_pixel += op
+        oracle_shape += osh
+        oracle_step_sum += oracle_idx
         n += 1
 
     if was_training:
@@ -171,15 +200,35 @@ def evaluate_arc(model, dataset, limit: int = 64, device=None) -> Dict[str, Any]
 
     d = max(n, 1)
     step_pixels = [x / d for x in step_pixel_sum]
-    result = {
-        "exact": exact / d,
-        "pixel_acc": pixel / d,
-        "shape_acc": shape / d,
+    adaptive_pixel_acc = adaptive_pixel / d
+    direct_pixel_acc = direct_pixel / d
+
+    return {
+        # Active inference path.
+        "exact": adaptive_exact / d,
+        "pixel_acc": adaptive_pixel_acc,
+        "shape_acc": adaptive_shape / d,
+
+        "adaptive_exact": adaptive_exact / d,
+        "adaptive_pixel_acc": adaptive_pixel_acc,
+        "adaptive_shape_acc": adaptive_shape / d,
+
+        "fixed_exact": fixed_exact / d,
+        "fixed_pixel_acc": fixed_pixel / d,
+        "fixed_shape_acc": fixed_shape / d,
+
         "direct_exact": direct_exact / d,
-        "direct_pixel_acc": direct_pixel / d,
+        "direct_pixel_acc": direct_pixel_acc,
         "direct_shape_acc": direct_shape / d,
-        "recursive_gain": (pixel - direct_pixel) / d,
+
+        "oracle_exact": oracle_exact / d,
+        "oracle_pixel_acc": oracle_pixel / d,
+        "oracle_shape_acc": oracle_shape / d,
+
+        "recursive_gain": adaptive_pixel_acc - direct_pixel_acc,
         "step_pixel_acc": step_pixels,
+        "avg_chosen_step": chosen_step_sum / d,
+        "avg_oracle_step": oracle_step_sum / d,
         "count": n,
     }
-    return result
+

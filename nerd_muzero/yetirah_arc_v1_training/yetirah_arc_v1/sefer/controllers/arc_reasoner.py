@@ -2,7 +2,7 @@ from __future__ import annotations
 
 # Kept for compatibility with the current launcher.
 ARC_REASONER_PATCH_ID = "v1.8-refreshable-cppn-base"
-ARC_REASONER_ARCH = "recursive-deltanet-v1"
+ARC_REASONER_ARCH = "recursive-deltanet-v1-state-ranker-v6"
 
 import torch
 import torch.nn as nn
@@ -93,6 +93,17 @@ class ARCReasoner(nn.Module):
             decay_max=cfg.fast_decay_max,
         )
 
+        # Scores direct state (0) and each recursive state jointly.
+        # Inputs: task summary, state summary, state delta, fast norm, step fraction.
+        ranker_in = cfg.node_dim * 3 + 2
+        self.state_ranker = nn.Sequential(
+            nn.Linear(ranker_in, cfg.rule_dim),
+            nn.GELU(),
+            nn.Linear(cfg.rule_dim, cfg.rule_dim // 2),
+            nn.GELU(),
+            nn.Linear(cfg.rule_dim // 2, 1),
+        )
+
     def encode_grid(self, grid: torch.Tensor, shapes: torch.Tensor) -> torch.Tensor:
         return self.grid_encoder(grid, shapes)
 
@@ -167,6 +178,101 @@ class ARCReasoner(nn.Module):
                 "fast_state": fast,
             }
         return state
+
+    def score_recursive_states(self, rule, info):
+        """Return learned scores for state 0..T using only inference-time signals."""
+        states = info["states"]
+        B = rule.shape[0]
+        D = self.cfg.node_dim
+
+        # Lightweight projection without adding another large task encoder.
+        if rule.shape[-1] >= D:
+            task_vec = rule[..., :D]
+        else:
+            task_vec = torch.cat(
+                [
+                    rule,
+                    torch.zeros(
+                        B, D - rule.shape[-1],
+                        device=rule.device, dtype=rule.dtype,
+                    ),
+                ],
+                dim=-1,
+            )
+
+        scores = []
+        prev = states[0]
+        total_steps = max(len(states) - 1, 1)
+
+        for i, state in enumerate(states):
+            state_vec = state.mean(dim=1)
+            delta_vec = (
+                torch.zeros_like(state_vec)
+                if i == 0 else (state - prev).mean(dim=1)
+            )
+
+            fast_norm = torch.zeros(B, 1, device=state.device, dtype=state.dtype)
+            if i > 0 and len(info.get("stats", [])) >= i:
+                v = info["stats"][i - 1].get("fast_norm")
+                if torch.is_tensor(v):
+                    fast_norm = (
+                        v.expand(B).unsqueeze(-1)
+                        if v.ndim == 0
+                        else v.reshape(B, -1).mean(dim=1, keepdim=True)
+                    )
+
+            step_frac = torch.full(
+                (B, 1), float(i) / float(total_steps),
+                device=state.device, dtype=state.dtype,
+            )
+            feat = torch.cat(
+                [task_vec, state_vec, delta_vec, fast_norm, step_frac], dim=-1
+            )
+            scores.append(self.state_ranker(feat).squeeze(-1))
+            prev = state
+
+        return torch.stack(scores, dim=1)
+
+    def select_ranked_state(self, rule, info):
+        scores = self.score_recursive_states(rule, info)
+        chosen = scores.argmax(dim=1)
+        stacked = torch.stack(info["states"], dim=1)
+        bidx = torch.arange(stacked.shape[0], device=stacked.device)
+        selected = stacked[bidx, chosen]
+        return selected, chosen, scores
+
+
+    def select_adaptive_state(self, info):
+        """Choose a recursive state using the learned halt logits only.
+
+        halt_logits[t] scores state[t+1].  No target information is used.
+        """
+        states = info["states"]
+        halt_logits = info["halt_logits"]
+        if not halt_logits:
+            return states[-1], 0
+
+        logits = torch.stack(halt_logits, dim=1)  # [B,T]
+        min_step = max(1, int(getattr(self.cfg, "adaptive_halt_min_step", 1)))
+
+        if getattr(self.cfg, "adaptive_halt_use_argmax", True):
+            chosen = logits.argmax(dim=1) + 1
+        else:
+            probs = torch.sigmoid(logits)
+            threshold = float(getattr(self.cfg, "halt_threshold", 0.90))
+            chosen = torch.full(
+                (logits.shape[0],), len(halt_logits),
+                device=logits.device, dtype=torch.long,
+            )
+            for t in range(max(min_step - 1, 0), len(halt_logits)):
+                take = (probs[:, t] >= threshold) & (chosen == len(halt_logits))
+                chosen[take] = t + 1
+
+        chosen = chosen.clamp(min=min_step, max=len(halt_logits))
+        stacked = torch.stack(states, dim=1)  # [B,T+1,N,D]
+        bidx = torch.arange(stacked.shape[0], device=stacked.device)
+        selected = stacked[bidx, chosen]
+        return selected, chosen
 
     def forward_episode(self, demos_x, demos_y, demos_x_shapes, demos_y_shapes,
                         demo_mask, query_x, query_shape, steps: int | None = None,

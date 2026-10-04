@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 ARC_PATCH_ID = "arc-scratch-v3-complete"
-ARC_RECURSIVE_TRAINING_REV = "recursive-generalization-v2"
+ARC_RECURSIVE_TRAINING_REV = "adaptive-halting-v5"
 
 from dataclasses import dataclass
 import torch
@@ -44,9 +44,9 @@ class ARCConfig:
     codec_steps: int = 1500
     direct_steps: int = 1500
     operator_discovery_steps: int = 0
-    program_steps: int = 5000
+    program_steps: int = 1500
     diagnostic_every: int = 50
-    eval_every: int = 500
+    eval_every: int = 200
 
     # Optimizer.
     codec_lr: float = 3e-4
@@ -84,6 +84,14 @@ class ARCConfig:
     recursive_fast_reg_weight: float = 0.002
     halt_weight: float = 0.02
     halt_threshold: float = 0.90
+    adaptive_halt_weight: float = 0.20
+    recursive_per_step_grid_weight: float = 0.15
+    adaptive_halt_use_argmax: bool = True
+    adaptive_halt_min_step: int = 1
+    recursive_gain_score_weight: float = 0.50
+    recursive_early_stop_patience: int = 4
+    recursive_early_stop_min_delta: float = 0.001
+    recursive_min_steps_before_stop: int = 400
 
     # Checkpoints.
     arc_checkpoint_path: str = "yetirah_arc_recursive_v1.pt"
