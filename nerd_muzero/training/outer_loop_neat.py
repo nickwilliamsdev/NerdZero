@@ -53,11 +53,6 @@ def evaluation_hook(genomes, config, env):
         
         # 3. Query the Substrate! (Overwrite model weights)
         with torch.no_grad():
-            # Query the multi-output CPPN with our coordinates
-            # cppn_net returns a list of PyTorch-NEAT CPPN nodes. We must iterate or invoke them individually if needed, 
-            # wait, PyTorch-NEAT create_cppn returns a CPPN model in some forks, but here it returns a list of Nodes.
-            # We must map them over the inputs.
-            # Evaluate PyTorch-NEAT nodes
             kwargs = {"x1": x1, "y1": y1, "x2": x2, "y2": y2}
             wq = cppn_net[0](**kwargs)
             wk = cppn_net[1](**kwargs)
