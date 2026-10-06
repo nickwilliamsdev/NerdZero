@@ -2,7 +2,7 @@ from __future__ import annotations
 
 # Kept for compatibility with the current launcher.
 ARC_EVAL_PATCH_ID = "v1.7-demo-consistency-search"
-ARC_EVAL_ARCH = "recursive-deltanet-v1-state-ranker-v6"
+ARC_EVAL_ARCH = "recursive-deltanet-v1-soft-ranker-v7"
 
 from typing import Any, Dict
 import numpy as np
@@ -140,6 +140,7 @@ def evaluate_arc(model, dataset, limit: int = 64, device=None) -> Dict[str, Any]
     oracle_exact = oracle_pixel = oracle_shape = 0.0
     step_pixel_sum = [0.0 for _ in range(model.cfg.recursive_steps + 1)]
     chosen_step_sum = 0.0
+    selector_conf_sum = 0.0
     oracle_step_sum = 0.0
     n = 0
 
@@ -173,6 +174,7 @@ def evaluate_arc(model, dataset, limit: int = 64, device=None) -> Dict[str, Any]
         direct_pixel += dp
         direct_shape += dsh
         chosen_step_sum += float(chosen[0].item())
+        selector_conf_sum += float(torch.softmax(rank_scores, dim=1).max(dim=1).values[0].item())
 
         # Oracle is diagnostic only: choose the target-best decoded state,
         # including step 0/direct. It is never used to make a real prediction.
@@ -228,6 +230,7 @@ def evaluate_arc(model, dataset, limit: int = 64, device=None) -> Dict[str, Any]
         "recursive_gain": adaptive_pixel_acc - direct_pixel_acc,
         "step_pixel_acc": step_pixels,
         "avg_chosen_step": chosen_step_sum / d,
+        "avg_selector_confidence": selector_conf_sum / d,
         "avg_oracle_step": oracle_step_sum / d,
         "count": n,
     }

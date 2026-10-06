@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 ARC_PATCH_ID = "arc-scratch-v3-complete"
-ARC_RECURSIVE_TRAINING_REV = "adaptive-halting-v5"
+ARC_RECURSIVE_TRAINING_REV = "soft-state-ranker-v7"
 
 from dataclasses import dataclass
 import torch
@@ -85,6 +85,11 @@ class ARCConfig:
     halt_weight: float = 0.02
     halt_threshold: float = 0.90
     adaptive_halt_weight: float = 0.20
+    state_rank_temperature: float = 0.35
+    state_rank_listwise_weight: float = 1.00
+    state_rank_pairwise_weight: float = 0.50
+    state_rank_regret_weight: float = 0.25
+    state_rank_pairwise_margin: float = 0.00
     recursive_per_step_grid_weight: float = 0.15
     adaptive_halt_use_argmax: bool = True
     adaptive_halt_min_step: int = 1

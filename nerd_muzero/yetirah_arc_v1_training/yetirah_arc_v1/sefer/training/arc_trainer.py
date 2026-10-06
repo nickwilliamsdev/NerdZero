@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 ARC_TRAINER_PATCH_ID = "arc-scratch-v3-complete"
-ARC_TRAINER_ARCH = "recursive-deltanet-v1-state-ranker-v6"
+ARC_TRAINER_ARCH = "recursive-deltanet-v1-soft-ranker-v7"
 
 import copy
 import random
@@ -51,26 +51,73 @@ def _per_sample_grid_objective(model, H, target, target_shape):
 
 
 def _adaptive_step_losses(model, rule, info, target, target_shape):
-    """Supervise all states and train a task-conditioned best-state ranker."""
+    """Soft/listwise + pairwise supervision for the state selector."""
     states = info["states"]
     if not states:
         z = torch.zeros((), device=target.device)
-        return None, z, z, None, None
+        return None, z, z, None, None, {}
 
     step_losses = torch.stack(
         [_per_sample_grid_objective(model, s, target, target_shape) for s in states],
         dim=1,
-    )
-    best_step_idx = step_losses.detach().argmin(dim=1)
-    rank_logits = model.score_recursive_states(rule, info)
-    rank_loss = F.cross_entropy(rank_logits, best_step_idx)
+    )  # [B,K], lower is better
+    target_losses = step_losses.detach()
+    best_step_idx = target_losses.argmin(dim=1)
 
-    # Direct state is frozen; recursive states receive auxiliary grid supervision.
+    rank_logits = model.score_recursive_states(rule, info)
+    temp = max(float(model.cfg.state_rank_temperature), 1e-4)
+
+    # Listwise target preserves relative quality instead of collapsing to argmin.
+    target_probs = torch.softmax(-target_losses / temp, dim=1)
+    log_probs = torch.log_softmax(rank_logits / temp, dim=1)
+    listwise_loss = -(target_probs * log_probs).sum(dim=1).mean()
+
+    # Pairwise preference weighted by how different the candidate losses are.
+    pair_terms = []
+    K = target_losses.shape[1]
+    for i in range(K):
+        for j in range(i + 1, K):
+            diff = target_losses[:, j] - target_losses[:, i]
+            sign = torch.sign(diff)
+            valid = sign != 0
+            if valid.any():
+                score_diff = rank_logits[:, i] - rank_logits[:, j]
+                weight = diff.abs().detach().clamp(max=1.0)
+                pair = F.softplus(
+                    -sign * score_diff + float(model.cfg.state_rank_pairwise_margin)
+                )
+                pair_terms.append((pair[valid] * weight[valid]).mean())
+
+    if pair_terms:
+        pairwise_loss = torch.stack(pair_terms).mean()
+    else:
+        pairwise_loss = torch.zeros((), device=target.device)
+
+    # Expected regret directly penalizes probability mass on worse states.
+    pred_probs = torch.softmax(rank_logits, dim=1)
+    regret = target_losses - target_losses.min(dim=1, keepdim=True).values
+    regret_loss = (pred_probs * regret).sum(dim=1).mean()
+
+    rank_loss = (
+        model.cfg.state_rank_listwise_weight * listwise_loss
+        + model.cfg.state_rank_pairwise_weight * pairwise_loss
+        + model.cfg.state_rank_regret_weight * regret_loss
+    )
+
     per_step_loss = (
         step_losses[:, 1:].mean()
         if step_losses.shape[1] > 1 else step_losses.mean()
     )
-    return step_losses, rank_loss, per_step_loss, best_step_idx, rank_logits
+
+    rank_stats = {
+        "rank_listwise": float(listwise_loss.detach().item()),
+        "rank_pairwise": float(pairwise_loss.detach().item()),
+        "rank_regret": float(regret_loss.detach().item()),
+        "rank_acc": float(
+            (rank_logits.detach().argmax(dim=1) == best_step_idx).float().mean().item()
+        ),
+    }
+    return step_losses, rank_loss, per_step_loss, best_step_idx, rank_logits, rank_stats
 
 
 
@@ -324,11 +371,13 @@ def train_arc_v1(cfg, train_data, val_data=None):
     # improve it instead of rewriting the entire model.
     _set_requires_grad(model, False)
     _set_requires_grad(model.recursive_cell, True)
+    _set_requires_grad(model.ranker_task_proj, True)
     _set_requires_grad(model.state_ranker, True)
 
     recursive_param_groups = [
         {
             "params": list(model.recursive_cell.parameters())
+                    + list(model.ranker_task_proj.parameters())
                     + list(model.state_ranker.parameters()),
             "lr": cfg.recursive_lr,
         },
@@ -346,7 +395,7 @@ def train_arc_v1(cfg, train_data, val_data=None):
         recursive_param_groups, weight_decay=cfg.weight_decay
     )
     print(
-        "ARC recursive-v6 frozen base: training recursive_cell + state_ranker"
+        "ARC recursive-v7 frozen base: training recursive_cell + soft state_ranker"
         + (" + low-LR rule encoder" if cfg.recursive_unfreeze_rule_encoder else "")
     )
     best_recursive = None
@@ -389,7 +438,7 @@ def train_arc_v1(cfg, train_data, val_data=None):
             intermediate = torch.stack(losses).mean()
 
         fast_reg = info["fast_state"].pow(2).mean()
-        step_grid_losses, rank_loss, per_step_grid_loss, best_step_idx, rank_logits = _adaptive_step_losses(
+        step_grid_losses, rank_loss, per_step_grid_loss, best_step_idx, rank_logits, rank_stats = _adaptive_step_losses(
             model, rule, info, batch.target_y, batch.target_shape
         )
 
@@ -434,7 +483,7 @@ def train_arc_v1(cfg, train_data, val_data=None):
                 f"looImprove={(loo_improve.item() if loo_improve is not None else float('nan')):.4f} "
                 f"looPerms={loo_stats.get('loo_permutations', 0)} "
                 f"bestStep={(best_step_idx.float().mean().item() + 1.0 if best_step_idx is not None else float('nan')):.2f} "
-                f"rankCE={rank_loss.item():.4f}"
+                f"rankLoss={rank_loss.item():.4f} "f"rankAcc={rank_stats.get('rank_acc', float('nan')):.3f} "f"list={rank_stats.get('rank_listwise', float('nan')):.3f} "f"pair={rank_stats.get('rank_pairwise', float('nan')):.3f} "f"regret={rank_stats.get('rank_regret', float('nan')):.3f}"
             )
 
         if val_data is not None and cfg.eval_every > 0 and step % cfg.eval_every == 0:

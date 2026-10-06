@@ -2,7 +2,7 @@ from __future__ import annotations
 
 # Kept for compatibility with the current launcher.
 ARC_REASONER_PATCH_ID = "v1.8-refreshable-cppn-base"
-ARC_REASONER_ARCH = "recursive-deltanet-v1-state-ranker-v6"
+ARC_REASONER_ARCH = "recursive-deltanet-v1-soft-ranker-v7"
 
 import torch
 import torch.nn as nn
@@ -93,15 +93,22 @@ class ARCReasoner(nn.Module):
             decay_max=cfg.fast_decay_max,
         )
 
-        # Scores direct state (0) and each recursive state jointly.
-        # Inputs: task summary, state summary, state delta, fast norm, step fraction.
-        ranker_in = cfg.node_dim * 3 + 2
+        # Rich task-conditioned state ranker.
+        # Ranking features are detached from the solver so selector training
+        # cannot distort a recursive trajectory that is already useful.
+        self.ranker_task_proj = nn.Sequential(
+            nn.LayerNorm(cfg.rule_dim),
+            nn.Linear(cfg.rule_dim, cfg.node_dim),
+            nn.GELU(),
+        )
+        ranker_in = cfg.node_dim * 5 + 4
         self.state_ranker = nn.Sequential(
+            nn.LayerNorm(ranker_in),
             nn.Linear(ranker_in, cfg.rule_dim),
             nn.GELU(),
-            nn.Linear(cfg.rule_dim, cfg.rule_dim // 2),
+            nn.Linear(cfg.rule_dim, cfg.rule_dim),
             nn.GELU(),
-            nn.Linear(cfg.rule_dim // 2, 1),
+            nn.Linear(cfg.rule_dim, 1),
         )
 
     def encode_grid(self, grid: torch.Tensor, shapes: torch.Tensor) -> torch.Tensor:
@@ -180,56 +187,77 @@ class ARCReasoner(nn.Module):
         return state
 
     def score_recursive_states(self, rule, info):
-        """Return learned scores for state 0..T using only inference-time signals."""
+        """Score state 0..T using detached task/state diagnostics.
+
+        Features:
+          task projection,
+          state mean + std,
+          delta mean + absolute delta mean,
+          state norm,
+          fast-state norm,
+          halt probability,
+          normalized step index.
+        """
         states = info["states"]
         B = rule.shape[0]
-        D = self.cfg.node_dim
+        total_steps = max(len(states) - 1, 1)
 
-        # Lightweight projection without adding another large task encoder.
-        if rule.shape[-1] >= D:
-            task_vec = rule[..., :D]
-        else:
-            task_vec = torch.cat(
+        task_vec = self.ranker_task_proj(rule.detach())
+        scores = []
+        prev = states[0].detach()
+
+        for i, state in enumerate(states):
+            s = state.detach()
+            state_mean = s.mean(dim=1)
+            state_std = s.std(dim=1, unbiased=False)
+
+            if i == 0:
+                delta = torch.zeros_like(s)
+            else:
+                delta = s - prev
+            delta_mean = delta.mean(dim=1)
+            delta_abs = delta.abs().mean(dim=1)
+
+            state_norm = s.pow(2).mean(dim=(1, 2), keepdim=False).sqrt().unsqueeze(-1)
+
+            fast_norm = torch.zeros(B, 1, device=s.device, dtype=s.dtype)
+            halt_prob = torch.zeros(B, 1, device=s.device, dtype=s.dtype)
+            if i > 0 and len(info.get("stats", [])) >= i:
+                stat = info["stats"][i - 1]
+                v = stat.get("fast_norm")
+                if torch.is_tensor(v):
+                    fast_norm = (
+                        v.detach().expand(B).unsqueeze(-1)
+                        if v.ndim == 0
+                        else v.detach().reshape(B, -1).mean(dim=1, keepdim=True)
+                    )
+                if len(info.get("halt_logits", [])) >= i:
+                    h = info["halt_logits"][i - 1].detach()
+                    halt_prob = torch.sigmoid(h).reshape(B, -1).mean(dim=1, keepdim=True)
+
+            step_frac = torch.full(
+                (B, 1),
+                float(i) / float(total_steps),
+                device=s.device,
+                dtype=s.dtype,
+            )
+
+            feat = torch.cat(
                 [
-                    rule,
-                    torch.zeros(
-                        B, D - rule.shape[-1],
-                        device=rule.device, dtype=rule.dtype,
-                    ),
+                    task_vec,
+                    state_mean,
+                    state_std,
+                    delta_mean,
+                    delta_abs,
+                    state_norm,
+                    fast_norm,
+                    halt_prob,
+                    step_frac,
                 ],
                 dim=-1,
             )
-
-        scores = []
-        prev = states[0]
-        total_steps = max(len(states) - 1, 1)
-
-        for i, state in enumerate(states):
-            state_vec = state.mean(dim=1)
-            delta_vec = (
-                torch.zeros_like(state_vec)
-                if i == 0 else (state - prev).mean(dim=1)
-            )
-
-            fast_norm = torch.zeros(B, 1, device=state.device, dtype=state.dtype)
-            if i > 0 and len(info.get("stats", [])) >= i:
-                v = info["stats"][i - 1].get("fast_norm")
-                if torch.is_tensor(v):
-                    fast_norm = (
-                        v.expand(B).unsqueeze(-1)
-                        if v.ndim == 0
-                        else v.reshape(B, -1).mean(dim=1, keepdim=True)
-                    )
-
-            step_frac = torch.full(
-                (B, 1), float(i) / float(total_steps),
-                device=state.device, dtype=state.dtype,
-            )
-            feat = torch.cat(
-                [task_vec, state_vec, delta_vec, fast_norm, step_frac], dim=-1
-            )
             scores.append(self.state_ranker(feat).squeeze(-1))
-            prev = state
+            prev = s
 
         return torch.stack(scores, dim=1)
 
