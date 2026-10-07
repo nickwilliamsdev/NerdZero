@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 ARC_TRAINER_PATCH_ID = "arc-scratch-v3-complete"
-ARC_TRAINER_ARCH = "recursive-deltanet-v1-soft-ranker-v7"
+ARC_TRAINER_ARCH = "recursive-deltanet-v1-demo-calibrated-v8"
 
 import copy
 import random
@@ -371,16 +371,9 @@ def train_arc_v1(cfg, train_data, val_data=None):
     # improve it instead of rewriting the entire model.
     _set_requires_grad(model, False)
     _set_requires_grad(model.recursive_cell, True)
-    _set_requires_grad(model.ranker_task_proj, True)
-    _set_requires_grad(model.state_ranker, True)
 
     recursive_param_groups = [
-        {
-            "params": list(model.recursive_cell.parameters())
-                    + list(model.ranker_task_proj.parameters())
-                    + list(model.state_ranker.parameters()),
-            "lr": cfg.recursive_lr,
-        },
+        {"params": list(model.recursive_cell.parameters()), "lr": cfg.recursive_lr},
     ]
     if getattr(cfg, "recursive_unfreeze_rule_encoder", False):
         _set_requires_grad(model.rule_encoder, True)
@@ -395,7 +388,7 @@ def train_arc_v1(cfg, train_data, val_data=None):
         recursive_param_groups, weight_decay=cfg.weight_decay
     )
     print(
-        "ARC recursive-v7 frozen base: training recursive_cell + soft state_ranker"
+        "ARC recursive-v8 frozen base: training recursive_cell; depth chosen from demos"
         + (" + low-LR rule encoder" if cfg.recursive_unfreeze_rule_encoder else "")
     )
     best_recursive = None
@@ -449,7 +442,6 @@ def train_arc_v1(cfg, train_data, val_data=None):
             + cfg.recursive_intermediate_weight * intermediate
             + cfg.recursive_consistency_weight * consistency
             + cfg.recursive_fast_reg_weight * fast_reg
-            + cfg.adaptive_halt_weight * rank_loss
             + cfg.recursive_per_step_grid_weight * per_step_grid_loss
         )
         if loo_final is not None:
@@ -495,12 +487,12 @@ def train_arc_v1(cfg, train_data, val_data=None):
             )
             print(
                 f"arc recursive val step={step:04d} exact={m['exact']:.3f} "
-                f"adaptivePixel={m['adaptive_pixel_acc']:.3f} "
+                f"calibratedPixel={m['adaptive_pixel_acc']:.3f} "
                 f"fixedPixel={m['fixed_pixel_acc']:.3f} "
                 f"oraclePixel={m['oracle_pixel_acc']:.3f} "
                 f"directPixel={m['direct_pixel_acc']:.3f} "
                 f"gain={m['recursive_gain']:+.3f} "
-                f"chosenStep={m['avg_chosen_step']:.2f} score={score:.4f}"
+                f"chosenDepth={m['avg_chosen_step']:.2f} score={score:.4f}"
             )
 
             if score > best_recursive_score:
@@ -537,7 +529,7 @@ def train_arc_v1(cfg, train_data, val_data=None):
 
     if cfg.restore_best_at_end and best_recursive is not None:
         model.load_state_dict(best_recursive, strict=True)
-        print(f"ARC recursive-v3 restored best checkpoint step={best_recursive_step}")
+        print(f"ARC recursive-v8 restored best checkpoint step={best_recursive_step}")
 
     _set_requires_grad(model, True)
 
@@ -567,13 +559,13 @@ def train_arc_v1(cfg, train_data, val_data=None):
         )
 
     print(
-        f"ARC adaptive-v5 final exact={final_metrics['exact']:.3f} "
-        f"adaptivePixel={final_metrics['adaptive_pixel_acc']:.3f} "
+        f"ARC demo-calibrated-v8 final exact={final_metrics['exact']:.3f} "
+        f"calibratedPixel={final_metrics['adaptive_pixel_acc']:.3f} "
         f"fixedPixel={final_metrics['fixed_pixel_acc']:.3f} "
         f"oraclePixel={final_metrics['oracle_pixel_acc']:.3f} "
         f"directPixel={final_metrics['direct_pixel_acc']:.3f} "
         f"gain={final_metrics['recursive_gain']:+.3f} "
-        f"chosenStep={final_metrics['avg_chosen_step']:.2f}"
+        f"chosenDepth={final_metrics['avg_chosen_step']:.2f}"
     )
     return model, final_metrics
 

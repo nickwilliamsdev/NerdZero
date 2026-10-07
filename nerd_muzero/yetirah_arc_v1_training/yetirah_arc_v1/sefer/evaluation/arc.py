@@ -2,7 +2,7 @@ from __future__ import annotations
 
 # Kept for compatibility with the current launcher.
 ARC_EVAL_PATCH_ID = "v1.7-demo-consistency-search"
-ARC_EVAL_ARCH = "recursive-deltanet-v1-soft-ranker-v7"
+ARC_EVAL_ARCH = "recursive-deltanet-v1-demo-calibrated-v8"
 
 from typing import Any, Dict
 import numpy as np
@@ -56,6 +56,50 @@ def _grid_scores(pred: np.ndarray, target: np.ndarray):
 
 
 @torch.no_grad()
+def _select_depth_from_demos(model, demos, device):
+    """Choose depth 0..T from leave-one-demo-out reconstruction only."""
+    T = int(model.cfg.recursive_steps)
+    if len(demos) < 2:
+        return T, [0.0 for _ in range(T + 1)]
+
+    scores = [0.0 for _ in range(T + 1)]
+    used = 0
+
+    for held_idx in range(len(demos)):
+        context = [d for i, d in enumerate(demos) if i != held_idx]
+        held_in, held_out = demos[held_idx]
+
+        dx, dy, dxs, dys, dm, q, qs = _episode_tensors(
+            context, held_in,
+            model.cfg.max_demos, model.cfg.max_grid_size, device
+        )
+        rule = model.encode_rule(dx, dy, dxs, dys, dm)
+        Hq = model.encode_grid(q, qs)
+        rule = model.condition_rule_on_query(rule, Hq)
+        _, info = model.recursive_reason(
+            Hq, rule, steps=T, return_trace=True
+        )
+
+        for depth, state in enumerate(info["states"]):
+            pred = _decode_grid(model, state)
+            exact, pixel, shape = _grid_scores(pred, held_out)
+            scores[depth] += (
+                pixel
+                + model.cfg.demo_depth_exact_weight * exact
+                + model.cfg.demo_depth_shape_weight * shape
+            )
+        used += 1
+
+    scores = [s / max(used, 1) for s in scores]
+    adjusted = [
+        s - model.cfg.demo_depth_prefer_shallower * d
+        for d, s in enumerate(scores)
+    ]
+    chosen = max(range(len(adjusted)), key=lambda i: adjusted[i])
+    return chosen, scores
+
+
+@torch.no_grad()
 def predict_arc(model, demos, query_x, device=None,
                 return_direct: bool = False, return_details: bool = False):
     device = device or next(model.parameters()).device
@@ -71,7 +115,11 @@ def predict_arc(model, demos, query_x, device=None,
         Hq, rule, steps=cfg.recursive_steps, return_trace=True
     )
 
-    adaptive_state, chosen, rank_scores = model.select_ranked_state(rule, info)
+    chosen_depth, demo_depth_scores = _select_depth_from_demos(
+        model, demos, device
+    )
+    chosen = torch.tensor([chosen_depth], device=device, dtype=torch.long)
+    adaptive_state = info["states"][chosen_depth]
     adaptive_grid = _decode_grid(model, adaptive_state)
     direct_grid = _decode_grid(model, info["states"][0])
     fixed_grid = _decode_grid(model, info["states"][-1])
@@ -79,7 +127,7 @@ def predict_arc(model, demos, query_x, device=None,
     details = {
         "mode": "adaptive_recursive_deltanet",
         "chosen_step": int(chosen[0].item()),
-        "rank_scores": rank_scores[0].detach().cpu().tolist(),
+        "demo_depth_scores": demo_depth_scores,
         "halt_probs": [
             float(torch.sigmoid(x).item()) for x in info["halt_logits"]
         ],
@@ -140,7 +188,6 @@ def evaluate_arc(model, dataset, limit: int = 64, device=None) -> Dict[str, Any]
     oracle_exact = oracle_pixel = oracle_shape = 0.0
     step_pixel_sum = [0.0 for _ in range(model.cfg.recursive_steps + 1)]
     chosen_step_sum = 0.0
-    selector_conf_sum = 0.0
     oracle_step_sum = 0.0
     n = 0
 
@@ -155,7 +202,11 @@ def evaluate_arc(model, dataset, limit: int = 64, device=None) -> Dict[str, Any]
             Hq, rule, steps=model.cfg.recursive_steps, return_trace=True
         )
 
-        adaptive_state, chosen, rank_scores = model.select_ranked_state(rule, info)
+        chosen_depth, demo_depth_scores = _select_depth_from_demos(
+            model, demos, device
+        )
+        chosen = torch.tensor([chosen_depth], device=device, dtype=torch.long)
+        adaptive_state = info["states"][chosen_depth]
         adaptive_pred = _decode_grid(model, adaptive_state)
         fixed_pred = _decode_grid(model, info["states"][-1])
         direct_pred = _decode_grid(model, info["states"][0])
@@ -174,7 +225,6 @@ def evaluate_arc(model, dataset, limit: int = 64, device=None) -> Dict[str, Any]
         direct_pixel += dp
         direct_shape += dsh
         chosen_step_sum += float(chosen[0].item())
-        selector_conf_sum += float(torch.softmax(rank_scores, dim=1).max(dim=1).values[0].item())
 
         # Oracle is diagnostic only: choose the target-best decoded state,
         # including step 0/direct. It is never used to make a real prediction.
@@ -230,7 +280,6 @@ def evaluate_arc(model, dataset, limit: int = 64, device=None) -> Dict[str, Any]
         "recursive_gain": adaptive_pixel_acc - direct_pixel_acc,
         "step_pixel_acc": step_pixels,
         "avg_chosen_step": chosen_step_sum / d,
-        "avg_selector_confidence": selector_conf_sum / d,
         "avg_oracle_step": oracle_step_sum / d,
         "count": n,
     }

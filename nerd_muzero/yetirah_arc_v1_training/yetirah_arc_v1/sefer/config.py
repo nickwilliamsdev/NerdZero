@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 ARC_PATCH_ID = "arc-scratch-v3-complete"
-ARC_RECURSIVE_TRAINING_REV = "soft-state-ranker-v7"
+ARC_RECURSIVE_TRAINING_REV = "demo-calibrated-depth-v8"
 
 from dataclasses import dataclass
 import torch
@@ -93,6 +93,9 @@ class ARCConfig:
     recursive_per_step_grid_weight: float = 0.15
     adaptive_halt_use_argmax: bool = True
     adaptive_halt_min_step: int = 1
+    demo_depth_exact_weight: float = 0.25
+    demo_depth_shape_weight: float = 0.05
+    demo_depth_prefer_shallower: float = 0.001
     recursive_gain_score_weight: float = 0.50
     recursive_early_stop_patience: int = 4
     recursive_early_stop_min_delta: float = 0.001
