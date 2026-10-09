@@ -48,14 +48,14 @@ def run_experiment():
         
     print(f"Beginning evolution across {config.pop_size} genomes per generation.")
     # Run evolution
-    winner = p.run(eval_genomes, n=200)  # Limited to 2 generations for testing
+    winner = p.run(eval_genomes, n=89)  # Limited to 2 generations for testing
     
     print("\nBest genome found:")
     print(winner)
     
     # Save the winner safely to be loaded by evaluate_agent.py
     import pickle
-    winner_path = os.path.abspath(os.path.join(local_dir, "../best_genome_bigger_pop.pkl"))
+    winner_path = os.path.abspath(os.path.join(local_dir, "../best_genome_biggest_pop.pkl"))
     with open(winner_path, "wb") as f:
         pickle.dump(winner, f)
     print(f"Saved best genome to {winner_path}")
