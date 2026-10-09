@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 ARC_PATCH_ID = "arc-scratch-v3-complete"
-ARC_RECURSIVE_TRAINING_REV = "demo-calibrated-depth-v8"
+ARC_RECURSIVE_TRAINING_REV = "demo-conditioned-controller-v9"
 
 from dataclasses import dataclass
 import torch
@@ -96,6 +96,10 @@ class ARCConfig:
     demo_depth_exact_weight: float = 0.25
     demo_depth_shape_weight: float = 0.05
     demo_depth_prefer_shallower: float = 0.001
+    depth_controller_weight: float = 0.50
+    depth_controller_regret_weight: float = 0.35
+    depth_controller_temperature: float = 0.50
+    depth_controller_lr_scale: float = 1.0
     recursive_gain_score_weight: float = 0.50
     recursive_early_stop_patience: int = 4
     recursive_early_stop_min_delta: float = 0.001

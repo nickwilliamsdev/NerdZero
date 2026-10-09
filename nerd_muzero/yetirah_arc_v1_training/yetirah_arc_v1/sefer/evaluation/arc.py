@@ -2,7 +2,7 @@ from __future__ import annotations
 
 # Kept for compatibility with the current launcher.
 ARC_EVAL_PATCH_ID = "v1.7-demo-consistency-search"
-ARC_EVAL_ARCH = "recursive-deltanet-v1-demo-calibrated-v8"
+ARC_EVAL_ARCH = "recursive-deltanet-v1-demo-controller-v9"
 
 from typing import Any, Dict
 import numpy as np
@@ -99,6 +99,12 @@ def _select_depth_from_demos(model, demos, device):
     return chosen, scores
 
 
+def _demo_scores_to_cost_tensor(scores, device, dtype):
+    return -torch.tensor(
+        scores, device=device, dtype=dtype
+    ).unsqueeze(0)
+
+
 @torch.no_grad()
 def predict_arc(model, demos, query_x, device=None,
                 return_direct: bool = False, return_details: bool = False):
@@ -115,11 +121,16 @@ def predict_arc(model, demos, query_x, device=None,
         Hq, rule, steps=cfg.recursive_steps, return_trace=True
     )
 
-    chosen_depth, demo_depth_scores = _select_depth_from_demos(
+    calibrated_depth, demo_depth_scores = _select_depth_from_demos(
         model, demos, device
     )
-    chosen = torch.tensor([chosen_depth], device=device, dtype=torch.long)
-    adaptive_state = info["states"][chosen_depth]
+    demo_profile = _demo_scores_to_cost_tensor(
+        demo_depth_scores, device, rule.dtype
+    )
+    adaptive_state, chosen, controller_logits = model.select_demo_conditioned_depth(
+        rule, info, demo_profile
+    )
+    chosen_depth = int(chosen[0].item())
     adaptive_grid = _decode_grid(model, adaptive_state)
     direct_grid = _decode_grid(model, info["states"][0])
     fixed_grid = _decode_grid(model, info["states"][-1])
@@ -128,6 +139,8 @@ def predict_arc(model, demos, query_x, device=None,
         "mode": "adaptive_recursive_deltanet",
         "chosen_step": int(chosen[0].item()),
         "demo_depth_scores": demo_depth_scores,
+        "calibrated_depth": int(calibrated_depth),
+        "controller_logits": controller_logits[0].detach().cpu().tolist(),
         "halt_probs": [
             float(torch.sigmoid(x).item()) for x in info["halt_logits"]
         ],
@@ -188,6 +201,7 @@ def evaluate_arc(model, dataset, limit: int = 64, device=None) -> Dict[str, Any]
     oracle_exact = oracle_pixel = oracle_shape = 0.0
     step_pixel_sum = [0.0 for _ in range(model.cfg.recursive_steps + 1)]
     chosen_step_sum = 0.0
+    calibrated_depth_sum = 0.0
     oracle_step_sum = 0.0
     n = 0
 
@@ -202,11 +216,16 @@ def evaluate_arc(model, dataset, limit: int = 64, device=None) -> Dict[str, Any]
             Hq, rule, steps=model.cfg.recursive_steps, return_trace=True
         )
 
-        chosen_depth, demo_depth_scores = _select_depth_from_demos(
+        calibrated_depth, demo_depth_scores = _select_depth_from_demos(
             model, demos, device
         )
-        chosen = torch.tensor([chosen_depth], device=device, dtype=torch.long)
-        adaptive_state = info["states"][chosen_depth]
+        demo_profile = _demo_scores_to_cost_tensor(
+            demo_depth_scores, device, rule.dtype
+        )
+        adaptive_state, chosen, controller_logits = model.select_demo_conditioned_depth(
+            rule, info, demo_profile
+        )
+        chosen_depth = int(chosen[0].item())
         adaptive_pred = _decode_grid(model, adaptive_state)
         fixed_pred = _decode_grid(model, info["states"][-1])
         direct_pred = _decode_grid(model, info["states"][0])
@@ -225,6 +244,7 @@ def evaluate_arc(model, dataset, limit: int = 64, device=None) -> Dict[str, Any]
         direct_pixel += dp
         direct_shape += dsh
         chosen_step_sum += float(chosen[0].item())
+        calibrated_depth_sum += float(calibrated_depth)
 
         # Oracle is diagnostic only: choose the target-best decoded state,
         # including step 0/direct. It is never used to make a real prediction.
@@ -280,6 +300,7 @@ def evaluate_arc(model, dataset, limit: int = 64, device=None) -> Dict[str, Any]
         "recursive_gain": adaptive_pixel_acc - direct_pixel_acc,
         "step_pixel_acc": step_pixels,
         "avg_chosen_step": chosen_step_sum / d,
+        "avg_calibrated_depth": calibrated_depth_sum / d,
         "avg_oracle_step": oracle_step_sum / d,
         "count": n,
     }

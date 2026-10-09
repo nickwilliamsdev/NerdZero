@@ -2,7 +2,7 @@ from __future__ import annotations
 
 # Kept for compatibility with the current launcher.
 ARC_REASONER_PATCH_ID = "v1.8-refreshable-cppn-base"
-ARC_REASONER_ARCH = "recursive-deltanet-v1-soft-ranker-v7"
+ARC_REASONER_ARCH = "recursive-deltanet-v1-demo-controller-v9"
 
 import torch
 import torch.nn as nn
@@ -111,6 +111,24 @@ class ARCReasoner(nn.Module):
             nn.Linear(cfg.rule_dim, 1),
         )
 
+        # v9 controller: maps a task's leave-one-demo-out depth profile plus
+        # query trajectory diagnostics to the depth to use on the real query.
+        self.depth_controller_task_proj = nn.Sequential(
+            nn.LayerNorm(cfg.rule_dim),
+            nn.Linear(cfg.rule_dim, cfg.node_dim),
+            nn.GELU(),
+        )
+        depth_count = cfg.recursive_steps + 1
+        controller_in = cfg.node_dim + depth_count * 3
+        self.depth_controller = nn.Sequential(
+            nn.LayerNorm(controller_in),
+            nn.Linear(controller_in, cfg.rule_dim),
+            nn.GELU(),
+            nn.Linear(cfg.rule_dim, cfg.rule_dim),
+            nn.GELU(),
+            nn.Linear(cfg.rule_dim, depth_count),
+        )
+
     def encode_grid(self, grid: torch.Tensor, shapes: torch.Tensor) -> torch.Tensor:
         return self.grid_encoder(grid, shapes)
 
@@ -185,6 +203,59 @@ class ARCReasoner(nn.Module):
                 "fast_state": fast,
             }
         return state
+
+    def score_demo_conditioned_depth(self, rule, info, demo_depth_profile):
+        """Score depth 0..T from task-local LOO evidence + query trajectory.
+
+        demo_depth_profile: [B,T+1], lower is better.  It is normalized per
+        task before entering the controller so scale differences across ARC
+        tasks do not dominate.
+        """
+        states = info["states"]
+        B = rule.shape[0]
+        K = len(states)
+
+        profile = demo_depth_profile.detach()
+        pmean = profile.mean(dim=1, keepdim=True)
+        pstd = profile.std(dim=1, keepdim=True, unbiased=False).clamp_min(1e-4)
+        profile_z = (profile - pmean) / pstd
+
+        state_norms = []
+        delta_norms = []
+        prev = states[0].detach()
+        for i, state in enumerate(states):
+            s = state.detach()
+            state_norms.append(
+                s.pow(2).mean(dim=(1, 2)).sqrt()
+            )
+            if i == 0:
+                delta_norms.append(torch.zeros(B, device=s.device, dtype=s.dtype))
+            else:
+                delta_norms.append(
+                    (s - prev).pow(2).mean(dim=(1, 2)).sqrt()
+                )
+            prev = s
+
+        state_norms = torch.stack(state_norms, dim=1)
+        delta_norms = torch.stack(delta_norms, dim=1)
+
+        task_vec = self.depth_controller_task_proj(rule.detach())
+        feat = torch.cat(
+            [task_vec, profile_z, state_norms, delta_norms],
+            dim=-1,
+        )
+        return self.depth_controller(feat)
+
+    def select_demo_conditioned_depth(self, rule, info, demo_depth_profile):
+        logits = self.score_demo_conditioned_depth(
+            rule, info, demo_depth_profile
+        )
+        chosen = logits.argmax(dim=1)
+        stacked = torch.stack(info["states"], dim=1)
+        bidx = torch.arange(stacked.shape[0], device=stacked.device)
+        selected = stacked[bidx, chosen]
+        return selected, chosen, logits
+
 
     def score_recursive_states(self, rule, info):
         """Score state 0..T using detached task/state diagnostics.
