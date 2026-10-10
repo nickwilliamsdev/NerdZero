@@ -2,7 +2,7 @@ from __future__ import annotations
 
 # Kept for compatibility with the current launcher.
 ARC_EVAL_PATCH_ID = "v1.7-demo-consistency-search"
-ARC_EVAL_ARCH = "recursive-deltanet-v1-demo-controller-v9"
+ARC_EVAL_ARCH = "recursive-deltanet-v1-depth-ensemble-v10"
 
 from typing import Any, Dict
 import numpy as np
@@ -99,10 +99,60 @@ def _select_depth_from_demos(model, demos, device):
     return chosen, scores
 
 
-def _demo_scores_to_cost_tensor(scores, device, dtype):
-    return -torch.tensor(
-        scores, device=device, dtype=dtype
-    ).unsqueeze(0)
+def _depth_ensemble_weights(model, demo_depth_scores, device, dtype):
+    """Turn task-local demo scores into sparse depth weights."""
+    scores = torch.tensor(
+        demo_depth_scores, device=device, dtype=dtype
+    )
+    K = scores.numel()
+
+    # Slight late-depth prior counters the systematic shallow bias observed
+    # in hard demo calibration, while demo evidence remains dominant.
+    depth = torch.arange(K, device=device, dtype=dtype)
+    if K > 1:
+        depth = depth / float(K - 1)
+    adjusted = scores + model.cfg.depth_ensemble_late_bias * depth
+
+    top_k = max(1, min(int(model.cfg.depth_ensemble_top_k), K))
+    keep = torch.topk(adjusted, k=top_k).indices
+    masked = torch.full_like(adjusted, float("-inf"))
+    masked[keep] = adjusted[keep]
+
+    temp = max(float(model.cfg.depth_ensemble_temperature), 1e-4)
+    weights = torch.softmax(masked / temp, dim=0)
+
+    # Preserve some of the robust fixed-final prediction in every task.
+    floor = float(model.cfg.depth_ensemble_fixed_floor)
+    floor = max(0.0, min(floor, 0.95))
+    weights = weights * (1.0 - floor)
+    weights[-1] = weights[-1] + floor
+    weights = weights / weights.sum().clamp_min(1e-8)
+    return weights
+
+
+def _decode_weighted_states(model, states, weights):
+    """Decode a weighted ensemble in logit space."""
+    color_mix = None
+    h_mix = None
+    w_mix = None
+
+    for weight, state in zip(weights, states):
+        color_logits, h_logits, w_logits = model.decode_grid(state)
+        if color_mix is None:
+            color_mix = weight * color_logits
+            h_mix = weight * h_logits
+            w_mix = weight * w_logits
+        else:
+            color_mix = color_mix + weight * color_logits
+            h_mix = h_mix + weight * h_logits
+            w_mix = w_mix + weight * w_logits
+
+    h = int(h_mix.argmax(dim=-1).item()) + 1
+    w = int(w_mix.argmax(dim=-1).item()) + 1
+    return (
+        color_mix.argmax(dim=1)[0, :h, :w]
+        .cpu().numpy().astype(np.int64)
+    )
 
 
 @torch.no_grad()
@@ -121,26 +171,23 @@ def predict_arc(model, demos, query_x, device=None,
         Hq, rule, steps=cfg.recursive_steps, return_trace=True
     )
 
-    calibrated_depth, demo_depth_scores = _select_depth_from_demos(
+    chosen_depth, demo_depth_scores = _select_depth_from_demos(
         model, demos, device
     )
-    demo_profile = _demo_scores_to_cost_tensor(
-        demo_depth_scores, device, rule.dtype
+    ensemble_weights = _depth_ensemble_weights(
+        model, demo_depth_scores, device, rule.dtype
     )
-    adaptive_state, chosen, controller_logits = model.select_demo_conditioned_depth(
-        rule, info, demo_profile
+    adaptive_grid = _decode_weighted_states(
+        model, info["states"], ensemble_weights
     )
-    chosen_depth = int(chosen[0].item())
-    adaptive_grid = _decode_grid(model, adaptive_state)
     direct_grid = _decode_grid(model, info["states"][0])
     fixed_grid = _decode_grid(model, info["states"][-1])
 
     details = {
         "mode": "adaptive_recursive_deltanet",
-        "chosen_step": int(chosen[0].item()),
+        "chosen_step": int(chosen_depth),
+        "ensemble_weights": ensemble_weights.detach().cpu().tolist(),
         "demo_depth_scores": demo_depth_scores,
-        "calibrated_depth": int(calibrated_depth),
-        "controller_logits": controller_logits[0].detach().cpu().tolist(),
         "halt_probs": [
             float(torch.sigmoid(x).item()) for x in info["halt_logits"]
         ],
@@ -201,8 +248,9 @@ def evaluate_arc(model, dataset, limit: int = 64, device=None) -> Dict[str, Any]
     oracle_exact = oracle_pixel = oracle_shape = 0.0
     step_pixel_sum = [0.0 for _ in range(model.cfg.recursive_steps + 1)]
     chosen_step_sum = 0.0
-    calibrated_depth_sum = 0.0
     oracle_step_sum = 0.0
+    ensemble_depth_sum = 0.0
+    ensemble_entropy_sum = 0.0
     n = 0
 
     for _, demos, qx, target in dataset.evaluation_episodes(limit=limit):
@@ -216,17 +264,15 @@ def evaluate_arc(model, dataset, limit: int = 64, device=None) -> Dict[str, Any]
             Hq, rule, steps=model.cfg.recursive_steps, return_trace=True
         )
 
-        calibrated_depth, demo_depth_scores = _select_depth_from_demos(
+        chosen_depth, demo_depth_scores = _select_depth_from_demos(
             model, demos, device
         )
-        demo_profile = _demo_scores_to_cost_tensor(
-            demo_depth_scores, device, rule.dtype
+        ensemble_weights = _depth_ensemble_weights(
+            model, demo_depth_scores, device, rule.dtype
         )
-        adaptive_state, chosen, controller_logits = model.select_demo_conditioned_depth(
-            rule, info, demo_profile
+        adaptive_pred = _decode_weighted_states(
+            model, info["states"], ensemble_weights
         )
-        chosen_depth = int(chosen[0].item())
-        adaptive_pred = _decode_grid(model, adaptive_state)
         fixed_pred = _decode_grid(model, info["states"][-1])
         direct_pred = _decode_grid(model, info["states"][0])
 
@@ -243,8 +289,10 @@ def evaluate_arc(model, dataset, limit: int = 64, device=None) -> Dict[str, Any]
         direct_exact += de
         direct_pixel += dp
         direct_shape += dsh
-        chosen_step_sum += float(chosen[0].item())
-        calibrated_depth_sum += float(calibrated_depth)
+        chosen_step_sum += float(chosen_depth)
+        depth_axis = torch.arange(len(ensemble_weights), device=device, dtype=ensemble_weights.dtype)
+        ensemble_depth_sum += float((ensemble_weights * depth_axis).sum().item())
+        ensemble_entropy_sum += float((-(ensemble_weights.clamp_min(1e-8) * ensemble_weights.clamp_min(1e-8).log()).sum()).item())
 
         # Oracle is diagnostic only: choose the target-best decoded state,
         # including step 0/direct. It is never used to make a real prediction.
@@ -300,7 +348,8 @@ def evaluate_arc(model, dataset, limit: int = 64, device=None) -> Dict[str, Any]
         "recursive_gain": adaptive_pixel_acc - direct_pixel_acc,
         "step_pixel_acc": step_pixels,
         "avg_chosen_step": chosen_step_sum / d,
-        "avg_calibrated_depth": calibrated_depth_sum / d,
+        "avg_ensemble_depth": ensemble_depth_sum / d,
+        "avg_ensemble_entropy": ensemble_entropy_sum / d,
         "avg_oracle_step": oracle_step_sum / d,
         "count": n,
     }

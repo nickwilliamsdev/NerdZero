@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 ARC_PATCH_ID = "arc-scratch-v3-complete"
-ARC_RECURSIVE_TRAINING_REV = "demo-conditioned-controller-v9"
+ARC_RECURSIVE_TRAINING_REV = "staged-predictor-adaptation-v12"
 
 from dataclasses import dataclass
 import torch
@@ -52,8 +52,13 @@ class ARCConfig:
     codec_lr: float = 3e-4
     direct_lr: float = 3e-4
     recursive_lr: float = 2e-4
-    recursive_unfreeze_rule_encoder: bool = False
-    recursive_rule_lr_scale: float = 0.10
+    recursive_unfreeze_rule_encoder: bool = True
+    recursive_rule_lr_scale: float = 0.05
+    recursive_rule_unfreeze_step: int = 600
+    recursive_rule_grad_clip: float = 0.25
+    recursive_predictor_unfreeze_step: int = 850
+    recursive_predictor_lr_scale: float = 0.02
+    recursive_predictor_grad_clip: float = 0.15
     weight_decay: float = 1e-4
     grad_clip: float = 1.0
 
@@ -96,10 +101,10 @@ class ARCConfig:
     demo_depth_exact_weight: float = 0.25
     demo_depth_shape_weight: float = 0.05
     demo_depth_prefer_shallower: float = 0.001
-    depth_controller_weight: float = 0.50
-    depth_controller_regret_weight: float = 0.35
-    depth_controller_temperature: float = 0.50
-    depth_controller_lr_scale: float = 1.0
+    depth_ensemble_temperature: float = 0.05
+    depth_ensemble_top_k: int = 3
+    depth_ensemble_fixed_floor: float = 0.25
+    depth_ensemble_late_bias: float = 0.005
     recursive_gain_score_weight: float = 0.50
     recursive_early_stop_patience: int = 4
     recursive_early_stop_min_delta: float = 0.001

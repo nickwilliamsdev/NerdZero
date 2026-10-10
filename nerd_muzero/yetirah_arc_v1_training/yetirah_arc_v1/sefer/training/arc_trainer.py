@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 ARC_TRAINER_PATCH_ID = "arc-scratch-v3-complete"
-ARC_TRAINER_ARCH = "recursive-deltanet-v1-demo-controller-v9"
+ARC_TRAINER_ARCH = "recursive-deltanet-v1-staged-predictor-adapt-v12"
 
 import copy
 import random
@@ -50,84 +50,74 @@ def _per_sample_grid_objective(model, H, target, target_shape):
     return cell + model.cfg.shape_weight * shape
 
 
-def _query_depth_targets(model, info, target, target_shape):
-    """Return per-sample query loss at every depth 0..T."""
+def _adaptive_step_losses(model, rule, info, target, target_shape):
+    """Soft/listwise + pairwise supervision for the state selector."""
     states = info["states"]
+    if not states:
+        z = torch.zeros((), device=target.device)
+        return None, z, z, None, None, {}
+
     step_losses = torch.stack(
-        [
-            _per_sample_grid_objective(model, s, target, target_shape)
-            for s in states
-        ],
+        [_per_sample_grid_objective(model, s, target, target_shape) for s in states],
         dim=1,
-    )
-    best_step_idx = step_losses.detach().argmin(dim=1)
-    per_step_loss = (
-        step_losses[:, 1:].mean()
-        if step_losses.shape[1] > 1
-        else step_losses.mean()
-    )
-    return step_losses, per_step_loss, best_step_idx
+    )  # [B,K], lower is better
+    target_losses = step_losses.detach()
+    best_step_idx = target_losses.argmin(dim=1)
 
+    rank_logits = model.score_recursive_states(rule, info)
+    temp = max(float(model.cfg.state_rank_temperature), 1e-4)
 
-def _depth_controller_loss(model, rule, info, demo_profile, profile_mask,
-                           query_step_losses):
-    """Train controller to map demo LOO profile -> query-best depth."""
-    if demo_profile is None or profile_mask is None or not profile_mask.any():
-        z = torch.zeros((), device=rule.device)
-        return z, {}
-
-    idx = torch.nonzero(profile_mask, as_tuple=False).flatten()
-    profile = demo_profile[idx]
-    sub_rule = rule[idx]
-
-    # Slice recursive trace to eligible rows.
-    sub_info = {
-        "states": [s[idx] for s in info["states"]],
-        "halt_logits": [h[idx] for h in info.get("halt_logits", [])],
-        "stats": [],
-    }
-    for st in info.get("stats", []):
-        sliced = {}
-        for k, v in st.items():
-            if torch.is_tensor(v) and v.ndim > 0 and v.shape[0] == rule.shape[0]:
-                sliced[k] = v[idx]
-            else:
-                sliced[k] = v
-        sub_info["stats"].append(sliced)
-
-    logits = model.score_demo_conditioned_depth(
-        sub_rule, sub_info, profile
-    )
-
-    target_losses = query_step_losses[idx].detach()
-    best_idx = target_losses.argmin(dim=1)
-
-    temp = max(float(model.cfg.depth_controller_temperature), 1e-4)
+    # Listwise target preserves relative quality instead of collapsing to argmin.
     target_probs = torch.softmax(-target_losses / temp, dim=1)
-    log_probs = torch.log_softmax(logits / temp, dim=1)
-    soft_ce = -(target_probs * log_probs).sum(dim=1).mean()
+    log_probs = torch.log_softmax(rank_logits / temp, dim=1)
+    listwise_loss = -(target_probs * log_probs).sum(dim=1).mean()
 
-    pred_probs = torch.softmax(logits, dim=1)
+    # Pairwise preference weighted by how different the candidate losses are.
+    pair_terms = []
+    K = target_losses.shape[1]
+    for i in range(K):
+        for j in range(i + 1, K):
+            diff = target_losses[:, j] - target_losses[:, i]
+            sign = torch.sign(diff)
+            valid = sign != 0
+            if valid.any():
+                score_diff = rank_logits[:, i] - rank_logits[:, j]
+                weight = diff.abs().detach().clamp(max=1.0)
+                pair = F.softplus(
+                    -sign * score_diff + float(model.cfg.state_rank_pairwise_margin)
+                )
+                pair_terms.append((pair[valid] * weight[valid]).mean())
+
+    if pair_terms:
+        pairwise_loss = torch.stack(pair_terms).mean()
+    else:
+        pairwise_loss = torch.zeros((), device=target.device)
+
+    # Expected regret directly penalizes probability mass on worse states.
+    pred_probs = torch.softmax(rank_logits, dim=1)
     regret = target_losses - target_losses.min(dim=1, keepdim=True).values
     regret_loss = (pred_probs * regret).sum(dim=1).mean()
 
-    loss = (
-        soft_ce
-        + model.cfg.depth_controller_regret_weight * regret_loss
+    rank_loss = (
+        model.cfg.state_rank_listwise_weight * listwise_loss
+        + model.cfg.state_rank_pairwise_weight * pairwise_loss
+        + model.cfg.state_rank_regret_weight * regret_loss
     )
 
-    stats = {
-        "controller_acc": float(
-            (logits.detach().argmax(dim=1) == best_idx).float().mean().item()
+    per_step_loss = (
+        step_losses[:, 1:].mean()
+        if step_losses.shape[1] > 1 else step_losses.mean()
+    )
+
+    rank_stats = {
+        "rank_listwise": float(listwise_loss.detach().item()),
+        "rank_pairwise": float(pairwise_loss.detach().item()),
+        "rank_regret": float(regret_loss.detach().item()),
+        "rank_acc": float(
+            (rank_logits.detach().argmax(dim=1) == best_step_idx).float().mean().item()
         ),
-        "controller_ce": float(soft_ce.detach().item()),
-        "controller_regret": float(regret_loss.detach().item()),
-        "controller_chosen": float(
-            logits.detach().argmax(dim=1).float().mean().item()
-        ),
-        "controller_target": float(best_idx.float().mean().item()),
     }
-    return loss, stats
+    return step_losses, rank_loss, per_step_loss, best_step_idx, rank_logits, rank_stats
 
 
 
@@ -172,15 +162,13 @@ def _set_requires_grad(module, value: bool):
 
 
 def _recursive_loo_auxiliary(model, batch):
-    """Multi-LOO recursion plus per-task depth profiles for the v9 controller."""
+    """Train recursion on multiple randomly held-out demonstrations per task."""
     counts = batch.demo_mask.sum(dim=1)
     eligible_rows = torch.nonzero(counts >= 2, as_tuple=False).flatten()
     if eligible_rows.numel() == 0:
-        return None, None, {}, None, None
+        return None, None, {}
 
     max_permutations = 2
-    K = model.cfg.recursive_steps + 1
-
     all_final_losses = []
     all_improve_losses = []
     all_initial_values = []
@@ -188,22 +176,13 @@ def _recursive_loo_auxiliary(model, batch):
     all_latent_initial = []
     all_latent_final = []
 
-    profile_sum = torch.zeros(
-        batch.demo_mask.shape[0], K, device=batch.demo_mask.device
-    )
-    profile_count = torch.zeros(
-        batch.demo_mask.shape[0], device=batch.demo_mask.device
-    )
-
     for b in eligible_rows.tolist():
         valid_demo_ids = torch.nonzero(
             batch.demo_mask[b], as_tuple=False
         ).flatten()
+
         perm = valid_demo_ids[
-            torch.randperm(
-                valid_demo_ids.numel(),
-                device=valid_demo_ids.device,
-            )
+            torch.randperm(valid_demo_ids.numel(), device=valid_demo_ids.device)
         ]
         held_ids = perm[:min(max_permutations, perm.numel())]
 
@@ -228,9 +207,7 @@ def _recursive_loo_auxiliary(model, batch):
             Ht = model.encode_grid(y, ys).detach()
 
             _, info = model.recursive_reason(
-                Hq, rule,
-                steps=model.cfg.recursive_steps,
-                return_trace=True,
+                Hq, rule, steps=model.cfg.recursive_steps, return_trace=True
             )
 
             step_losses = []
@@ -240,31 +217,25 @@ def _recursive_loo_auxiliary(model, batch):
                 latent = (state - Ht).pow(2).mean()
                 decoded = c + model.cfg.shape_weight * s
                 step_losses.append(
-                    decoded
-                    + model.cfg.recursive_latent_weight * latent
+                    decoded + model.cfg.recursive_latent_weight * latent
                 )
                 step_latent.append(latent)
 
-            depth_vec = torch.stack(
-                [x.detach() for x in step_losses]
-            )
-            profile_sum[b] += depth_vec
-            profile_count[b] += 1.0
-
             final_loss = step_losses[-1]
+
+            improve_terms = []
             margin = float(model.cfg.recursive_step_improvement_margin)
-            improve_terms = [
-                torch.relu(nxt - prev + margin)
-                for prev, nxt in zip(step_losses[:-1], step_losses[1:])
-            ]
-            improvement_loss = (
-                torch.stack(improve_terms).mean()
-                if improve_terms
-                else torch.zeros(
-                    (), device=final_loss.device,
-                    dtype=final_loss.dtype,
+            for prev_loss, next_loss in zip(step_losses[:-1], step_losses[1:]):
+                improve_terms.append(
+                    torch.relu(next_loss - prev_loss + margin)
                 )
-            )
+
+            if improve_terms:
+                improvement_loss = torch.stack(improve_terms).mean()
+            else:
+                improvement_loss = torch.zeros(
+                    (), device=final_loss.device, dtype=final_loss.dtype
+                )
 
             all_final_losses.append(final_loss)
             all_improve_losses.append(improvement_loss)
@@ -274,13 +245,11 @@ def _recursive_loo_auxiliary(model, batch):
             all_latent_final.append(step_latent[-1].detach())
 
     if not all_final_losses:
-        return None, None, {}, None, None
-
-    profile_mask = profile_count > 0
-    profile = profile_sum / profile_count.clamp_min(1.0).unsqueeze(1)
+        return None, None, {}
 
     final_loss = torch.stack(all_final_losses).mean()
     improvement_loss = torch.stack(all_improve_losses).mean()
+
     stats = {
         "loo_initial": float(torch.stack(all_initial_values).mean().item()),
         "loo_final": float(torch.stack(all_final_values).mean().item()),
@@ -288,8 +257,7 @@ def _recursive_loo_auxiliary(model, batch):
         "loo_latent_final": float(torch.stack(all_latent_final).mean().item()),
         "loo_permutations": len(all_final_losses),
     }
-    return final_loss, improvement_loss, stats, profile, profile_mask
-
+    return final_loss, improvement_loss, stats
 
 
 
@@ -399,36 +367,52 @@ def train_arc_v1(cfg, train_data, val_data=None):
         print(f"ARC recursive-v1 restored best direct score={best_direct_score:.4f}")
 
     # Phase C: recursive DeltaNet reasoning.
-    # Preserve the best direct/meta representation. The recurrent adapter must
-    # improve it instead of rewriting the entire model.
+    # Stage 1: keep the direct/meta representation fully frozen while the
+    # recursive cell learns a stable improvement operator.
+    # Stage 2: after recursive_rule_unfreeze_step, adapt only the rule/query
+    # pathway at a much smaller LR. The codec and direct predictor remain frozen.
     _set_requires_grad(model, False)
     _set_requires_grad(model.recursive_cell, True)
-    _set_requires_grad(model.depth_controller_task_proj, True)
-    _set_requires_grad(model.depth_controller, True)
 
     recursive_param_groups = [
         {"params": list(model.recursive_cell.parameters()), "lr": cfg.recursive_lr},
-        {
-            "params": list(model.depth_controller_task_proj.parameters())
-                    + list(model.depth_controller.parameters()),
-            "lr": cfg.recursive_lr * cfg.depth_controller_lr_scale,
-        },
     ]
-    if getattr(cfg, "recursive_unfreeze_rule_encoder", False):
-        _set_requires_grad(model.rule_encoder, True)
-        _set_requires_grad(model.query_rule_refiner, True)
-        recursive_param_groups.append({
-            "params": list(model.rule_encoder.parameters())
-                    + list(model.query_rule_refiner.parameters()),
-            "lr": cfg.recursive_lr * cfg.recursive_rule_lr_scale,
-        })
-
     recursive_opt = torch.optim.AdamW(
         recursive_param_groups, weight_decay=cfg.weight_decay
     )
+
+    rule_modules = [
+        model.demo_slot_encoder,
+        model.demo_slot_score,
+        model.demo_pair_encoder,
+        model.rule_encoder,
+        model.query_slot_proj,
+        model.query_rule_query,
+        model.query_rule_refiner,
+        model.query_rule_norm,
+    ]
+    rule_params = [
+        p for module in rule_modules
+        for p in module.parameters()
+    ]
+    rule_unfrozen = False
+
+    predictor_modules = [
+        model.direct_rule_to_slots,
+        model.direct_norm,
+    ]
+    predictor_params = [
+        p for module in predictor_modules
+        for p in module.parameters()
+    ]
+    predictor_unfrozen = False
+
     print(
-        "ARC recursive-v9 frozen base: training recursive_cell + demo-conditioned controller"
-        + (" + low-LR rule encoder" if cfg.recursive_unfreeze_rule_encoder else "")
+        "ARC recursive-v12 stage1: recursive_cell only; "
+        f"rule path at step={cfg.recursive_rule_unfreeze_step} "
+        f"(lrScale={cfg.recursive_rule_lr_scale:.3f}); "
+        f"goal predictor at step={cfg.recursive_predictor_unfreeze_step} "
+        f"(lrScale={cfg.recursive_predictor_lr_scale:.3f})"
     )
     best_recursive = None
     best_recursive_score = -1.0
@@ -438,6 +422,46 @@ def train_arc_v1(cfg, train_data, val_data=None):
 
     for step in range(1, cfg.program_steps + 1):
         model.train()
+
+        if (
+            getattr(cfg, "recursive_unfreeze_rule_encoder", False)
+            and not rule_unfrozen
+            and step >= cfg.recursive_rule_unfreeze_step
+        ):
+            for module in rule_modules:
+                _set_requires_grad(module, True)
+
+            recursive_opt.add_param_group({
+                "params": rule_params,
+                "lr": cfg.recursive_lr * cfg.recursive_rule_lr_scale,
+                "weight_decay": cfg.weight_decay,
+            })
+            rule_unfrozen = True
+            print(
+                f"ARC recursive-v12 stage2 step={step}: "
+                f"unfroze rule/query path lr="
+                f"{cfg.recursive_lr * cfg.recursive_rule_lr_scale:.2e}"
+            )
+
+        if (
+            not predictor_unfrozen
+            and step >= cfg.recursive_predictor_unfreeze_step
+        ):
+            for module in predictor_modules:
+                _set_requires_grad(module, True)
+
+            recursive_opt.add_param_group({
+                "params": predictor_params,
+                "lr": cfg.recursive_lr * cfg.recursive_predictor_lr_scale,
+                "weight_decay": cfg.weight_decay,
+            })
+            predictor_unfrozen = True
+            print(
+                f"ARC recursive-v12 stage3 step={step}: "
+                f"unfroze direct goal predictor lr="
+                f"{cfg.recursive_lr * cfg.recursive_predictor_lr_scale:.2e}"
+            )
+
         batch = train_data.sample_batch(cfg.batch_size, device)
 
         rule = model.encode_rule(
@@ -470,16 +494,11 @@ def train_arc_v1(cfg, train_data, val_data=None):
             intermediate = torch.stack(losses).mean()
 
         fast_reg = info["fast_state"].pow(2).mean()
-        step_grid_losses, per_step_grid_loss, best_step_idx = _query_depth_targets(
-            model, info, batch.target_y, batch.target_shape
+        step_grid_losses, rank_loss, per_step_grid_loss, best_step_idx, rank_logits, rank_stats = _adaptive_step_losses(
+            model, rule, info, batch.target_y, batch.target_shape
         )
 
-        loo_final, loo_improve, loo_stats, demo_profile, profile_mask = _recursive_loo_auxiliary(
-            model, batch
-        )
-        controller_loss, controller_stats = _depth_controller_loss(
-            model, rule, info, demo_profile, profile_mask, step_grid_losses
-        )
+        loo_final, loo_improve, loo_stats = _recursive_loo_auxiliary(model, batch)
         loss = (
             cfg.recursive_grid_weight * (color_loss + cfg.shape_weight * shape_loss)
             + cfg.recursive_latent_weight * final_latent
@@ -487,7 +506,6 @@ def train_arc_v1(cfg, train_data, val_data=None):
             + cfg.recursive_consistency_weight * consistency
             + cfg.recursive_fast_reg_weight * fast_reg
             + cfg.recursive_per_step_grid_weight * per_step_grid_loss
-            + cfg.depth_controller_weight * controller_loss
         )
         if loo_final is not None:
             loss = (
@@ -498,8 +516,34 @@ def train_arc_v1(cfg, train_data, val_data=None):
 
         recursive_opt.zero_grad(set_to_none=True)
         loss.backward()
-        trainable = [p for p in model.parameters() if p.requires_grad]
-        torch.nn.utils.clip_grad_norm_(trainable, cfg.grad_clip)
+        recursive_params = [
+            p for p in model.recursive_cell.parameters()
+            if p.requires_grad and p.grad is not None
+        ]
+        if recursive_params:
+            torch.nn.utils.clip_grad_norm_(recursive_params, cfg.grad_clip)
+
+        if rule_unfrozen:
+            active_rule_params = [
+                p for p in rule_params
+                if p.requires_grad and p.grad is not None
+            ]
+            if active_rule_params:
+                torch.nn.utils.clip_grad_norm_(
+                    active_rule_params, cfg.recursive_rule_grad_clip
+                )
+
+        if predictor_unfrozen:
+            active_predictor_params = [
+                p for p in predictor_params
+                if p.requires_grad and p.grad is not None
+            ]
+            if active_predictor_params:
+                torch.nn.utils.clip_grad_norm_(
+                    active_predictor_params,
+                    cfg.recursive_predictor_grad_clip,
+                )
+
         recursive_opt.step()
 
         if step == 1 or step % cfg.diagnostic_every == 0 or step == cfg.program_steps:
@@ -519,12 +563,9 @@ def train_arc_v1(cfg, train_data, val_data=None):
                 f"looN={loo_stats.get('loo_final', float('nan')):.3f} "
                 f"looImprove={(loo_improve.item() if loo_improve is not None else float('nan')):.4f} "
                 f"looPerms={loo_stats.get('loo_permutations', 0)} "
-                f"bestStep={(best_step_idx.float().mean().item() if best_step_idx is not None else float('nan')):.2f} "
-                f"ctrlLoss={controller_loss.item():.4f} "
-                f"ctrlAcc={controller_stats.get('controller_acc', float('nan')):.3f} "
-                f"ctrlChosen={controller_stats.get('controller_chosen', float('nan')):.2f} "
-                f"ctrlTarget={controller_stats.get('controller_target', float('nan')):.2f} "
-                f"ctrlRegret={controller_stats.get('controller_regret', float('nan')):.4f}"
+                f"stage={'predictor-adapt' if predictor_unfrozen else ('rule-adapt' if rule_unfrozen else 'cell-only')} "
+                f"bestStep={(best_step_idx.float().mean().item() + 1.0 if best_step_idx is not None else float('nan')):.2f} "
+                f"rankLoss={rank_loss.item():.4f} "f"rankAcc={rank_stats.get('rank_acc', float('nan')):.3f} "f"list={rank_stats.get('rank_listwise', float('nan')):.3f} "f"pair={rank_stats.get('rank_pairwise', float('nan')):.3f} "f"regret={rank_stats.get('rank_regret', float('nan')):.3f}"
             )
 
         if val_data is not None and cfg.eval_every > 0 and step % cfg.eval_every == 0:
@@ -536,12 +577,12 @@ def train_arc_v1(cfg, train_data, val_data=None):
             )
             print(
                 f"arc recursive val step={step:04d} exact={m['exact']:.3f} "
-                f"calibratedPixel={m['adaptive_pixel_acc']:.3f} "
+                f"ensemblePixel={m['adaptive_pixel_acc']:.3f} "
                 f"fixedPixel={m['fixed_pixel_acc']:.3f} "
                 f"oraclePixel={m['oracle_pixel_acc']:.3f} "
                 f"directPixel={m['direct_pixel_acc']:.3f} "
                 f"gain={m['recursive_gain']:+.3f} "
-                f"chosenDepth={m['avg_chosen_step']:.2f} score={score:.4f}"
+                f"hardDepth={m['avg_chosen_step']:.2f} "f"ensDepth={m.get('avg_ensemble_depth', float('nan')):.2f} score={score:.4f}"
             )
 
             if score > best_recursive_score:
@@ -578,7 +619,7 @@ def train_arc_v1(cfg, train_data, val_data=None):
 
     if cfg.restore_best_at_end and best_recursive is not None:
         model.load_state_dict(best_recursive, strict=True)
-        print(f"ARC recursive-v9 restored best checkpoint step={best_recursive_step}")
+        print(f"ARC recursive-v12 restored best checkpoint step={best_recursive_step}")
 
     _set_requires_grad(model, True)
 
@@ -608,13 +649,13 @@ def train_arc_v1(cfg, train_data, val_data=None):
         )
 
     print(
-        f"ARC demo-controller-v9 final exact={final_metrics['exact']:.3f} "
-        f"calibratedPixel={final_metrics['adaptive_pixel_acc']:.3f} "
+        f"ARC staged-predictor-v12 final exact={final_metrics['exact']:.3f} "
+        f"ensemblePixel={final_metrics['adaptive_pixel_acc']:.3f} "
         f"fixedPixel={final_metrics['fixed_pixel_acc']:.3f} "
         f"oraclePixel={final_metrics['oracle_pixel_acc']:.3f} "
         f"directPixel={final_metrics['direct_pixel_acc']:.3f} "
         f"gain={final_metrics['recursive_gain']:+.3f} "
-        f"chosenDepth={final_metrics['avg_chosen_step']:.2f}"
+        f"hardDepth={final_metrics['avg_chosen_step']:.2f} "f"ensDepth={final_metrics.get('avg_ensemble_depth', float('nan')):.2f}"
     )
     return model, final_metrics
 
