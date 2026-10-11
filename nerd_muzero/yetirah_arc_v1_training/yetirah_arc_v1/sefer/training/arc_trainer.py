@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 ARC_TRAINER_PATCH_ID = "arc-scratch-v3-complete"
-ARC_TRAINER_ARCH = "recursive-deltanet-v1-staged-predictor-adapt-v12"
+ARC_TRAINER_ARCH = "recursive-deltanet-v1-depth-curriculum-v13"
 
 import copy
 import random
@@ -161,7 +161,7 @@ def _set_requires_grad(module, value: bool):
         p.requires_grad_(value)
 
 
-def _recursive_loo_auxiliary(model, batch):
+def _recursive_loo_auxiliary(model, batch, reasoning_steps=None):
     """Train recursion on multiple randomly held-out demonstrations per task."""
     counts = batch.demo_mask.sum(dim=1)
     eligible_rows = torch.nonzero(counts >= 2, as_tuple=False).flatten()
@@ -207,7 +207,10 @@ def _recursive_loo_auxiliary(model, batch):
             Ht = model.encode_grid(y, ys).detach()
 
             _, info = model.recursive_reason(
-                Hq, rule, steps=model.cfg.recursive_steps, return_trace=True
+                Hq,
+                rule,
+                steps=(reasoning_steps if reasoning_steps is not None else model.cfg.recursive_steps),
+                return_trace=True,
             )
 
             step_losses = []
@@ -397,22 +400,13 @@ def train_arc_v1(cfg, train_data, val_data=None):
     ]
     rule_unfrozen = False
 
-    predictor_modules = [
-        model.direct_rule_to_slots,
-        model.direct_norm,
-    ]
-    predictor_params = [
-        p for module in predictor_modules
-        for p in module.parameters()
-    ]
-    predictor_unfrozen = False
-
     print(
-        "ARC recursive-v12 stage1: recursive_cell only; "
-        f"rule path at step={cfg.recursive_rule_unfreeze_step} "
-        f"(lrScale={cfg.recursive_rule_lr_scale:.3f}); "
-        f"goal predictor at step={cfg.recursive_predictor_unfreeze_step} "
-        f"(lrScale={cfg.recursive_predictor_lr_scale:.3f})"
+        "ARC recursive-v13 depth curriculum: "
+        f"{cfg.recursive_train_steps_stage1}->"
+        f"{cfg.recursive_train_steps_stage2}->"
+        f"{cfg.recursive_train_steps_stage3} steps; "
+        f"rule path scheduled at step={cfg.recursive_rule_unfreeze_step} "
+        f"with lrScale={cfg.recursive_rule_lr_scale:.3f}"
     )
     best_recursive = None
     best_recursive_score = -1.0
@@ -422,6 +416,13 @@ def train_arc_v1(cfg, train_data, val_data=None):
 
     for step in range(1, cfg.program_steps + 1):
         model.train()
+
+        if step < cfg.recursive_depth_stage2_step:
+            train_reason_steps = cfg.recursive_train_steps_stage1
+        elif step < cfg.recursive_depth_stage3_step:
+            train_reason_steps = cfg.recursive_train_steps_stage2
+        else:
+            train_reason_steps = cfg.recursive_train_steps_stage3
 
         if (
             getattr(cfg, "recursive_unfreeze_rule_encoder", False)
@@ -438,28 +439,9 @@ def train_arc_v1(cfg, train_data, val_data=None):
             })
             rule_unfrozen = True
             print(
-                f"ARC recursive-v12 stage2 step={step}: "
+                f"ARC recursive-v13 rule-adapt step={step}: "
                 f"unfroze rule/query path lr="
                 f"{cfg.recursive_lr * cfg.recursive_rule_lr_scale:.2e}"
-            )
-
-        if (
-            not predictor_unfrozen
-            and step >= cfg.recursive_predictor_unfreeze_step
-        ):
-            for module in predictor_modules:
-                _set_requires_grad(module, True)
-
-            recursive_opt.add_param_group({
-                "params": predictor_params,
-                "lr": cfg.recursive_lr * cfg.recursive_predictor_lr_scale,
-                "weight_decay": cfg.weight_decay,
-            })
-            predictor_unfrozen = True
-            print(
-                f"ARC recursive-v12 stage3 step={step}: "
-                f"unfroze direct goal predictor lr="
-                f"{cfg.recursive_lr * cfg.recursive_predictor_lr_scale:.2e}"
             )
 
         batch = train_data.sample_batch(cfg.batch_size, device)
@@ -473,7 +455,7 @@ def train_arc_v1(cfg, train_data, val_data=None):
         Ht = model.encode_grid(batch.target_y, batch.target_shape).detach()
 
         Hr, info = model.recursive_reason(
-            Hq, rule, steps=cfg.recursive_steps, return_trace=True
+            Hq, rule, steps=train_reason_steps, return_trace=True
         )
         Hd = info["states"][0]
 
@@ -498,7 +480,9 @@ def train_arc_v1(cfg, train_data, val_data=None):
             model, rule, info, batch.target_y, batch.target_shape
         )
 
-        loo_final, loo_improve, loo_stats = _recursive_loo_auxiliary(model, batch)
+        loo_final, loo_improve, loo_stats = _recursive_loo_auxiliary(
+            model, batch, reasoning_steps=train_reason_steps
+        )
         loss = (
             cfg.recursive_grid_weight * (color_loss + cfg.shape_weight * shape_loss)
             + cfg.recursive_latent_weight * final_latent
@@ -533,17 +517,6 @@ def train_arc_v1(cfg, train_data, val_data=None):
                     active_rule_params, cfg.recursive_rule_grad_clip
                 )
 
-        if predictor_unfrozen:
-            active_predictor_params = [
-                p for p in predictor_params
-                if p.requires_grad and p.grad is not None
-            ]
-            if active_predictor_params:
-                torch.nn.utils.clip_grad_norm_(
-                    active_predictor_params,
-                    cfg.recursive_predictor_grad_clip,
-                )
-
         recursive_opt.step()
 
         if step == 1 or step % cfg.diagnostic_every == 0 or step == cfg.program_steps:
@@ -563,8 +536,9 @@ def train_arc_v1(cfg, train_data, val_data=None):
                 f"looN={loo_stats.get('loo_final', float('nan')):.3f} "
                 f"looImprove={(loo_improve.item() if loo_improve is not None else float('nan')):.4f} "
                 f"looPerms={loo_stats.get('loo_permutations', 0)} "
-                f"stage={'predictor-adapt' if predictor_unfrozen else ('rule-adapt' if rule_unfrozen else 'cell-only')} "
-                f"bestStep={(best_step_idx.float().mean().item() + 1.0 if best_step_idx is not None else float('nan')):.2f} "
+                f"stage={'rule-adapt' if rule_unfrozen else 'cell-only'} "
+                f"trainDepth={train_reason_steps} "
+                f"bestDepth={(best_step_idx.float().mean().item() if best_step_idx is not None else float('nan')):.2f} "
                 f"rankLoss={rank_loss.item():.4f} "f"rankAcc={rank_stats.get('rank_acc', float('nan')):.3f} "f"list={rank_stats.get('rank_listwise', float('nan')):.3f} "f"pair={rank_stats.get('rank_pairwise', float('nan')):.3f} "f"regret={rank_stats.get('rank_regret', float('nan')):.3f}"
             )
 
@@ -619,7 +593,7 @@ def train_arc_v1(cfg, train_data, val_data=None):
 
     if cfg.restore_best_at_end and best_recursive is not None:
         model.load_state_dict(best_recursive, strict=True)
-        print(f"ARC recursive-v12 restored best checkpoint step={best_recursive_step}")
+        print(f"ARC recursive-v13 restored best checkpoint step={best_recursive_step}")
 
     _set_requires_grad(model, True)
 
@@ -649,7 +623,7 @@ def train_arc_v1(cfg, train_data, val_data=None):
         )
 
     print(
-        f"ARC staged-predictor-v12 final exact={final_metrics['exact']:.3f} "
+        f"ARC depth-curriculum-v13 final exact={final_metrics['exact']:.3f} "
         f"ensemblePixel={final_metrics['adaptive_pixel_acc']:.3f} "
         f"fixedPixel={final_metrics['fixed_pixel_acc']:.3f} "
         f"oraclePixel={final_metrics['oracle_pixel_acc']:.3f} "

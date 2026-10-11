@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 ARC_PATCH_ID = "arc-scratch-v3-complete"
-ARC_RECURSIVE_TRAINING_REV = "staged-predictor-adaptation-v12"
+ARC_RECURSIVE_TRAINING_REV = "depth-curriculum-v13"
 
 from dataclasses import dataclass
 import torch
@@ -56,9 +56,6 @@ class ARCConfig:
     recursive_rule_lr_scale: float = 0.05
     recursive_rule_unfreeze_step: int = 600
     recursive_rule_grad_clip: float = 0.25
-    recursive_predictor_unfreeze_step: int = 850
-    recursive_predictor_lr_scale: float = 0.02
-    recursive_predictor_grad_clip: float = 0.15
     weight_decay: float = 1e-4
     grad_clip: float = 1.0
 
@@ -75,7 +72,12 @@ class ARCConfig:
     recursive_step_improvement_margin: float = 0.01
 
     # Recursive DeltaNet.
-    recursive_steps: int = 6
+    recursive_steps: int = 10
+    recursive_train_steps_stage1: int = 6
+    recursive_train_steps_stage2: int = 8
+    recursive_train_steps_stage3: int = 10
+    recursive_depth_stage2_step: int = 400
+    recursive_depth_stage3_step: int = 800
     recursive_heads: int = 4
     fast_state_dim: int = 32
     fast_update_scale: float = 0.35
