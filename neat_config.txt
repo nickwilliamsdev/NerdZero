@@ -14,7 +14,7 @@ network_type            = feedforward
 # Network parameters. 
 # 4 Inputs: [x1, y1, x2, y2]
 # 4 Outputs: [weight_q, weight_k, weight_v, weight_beta]
-num_hidden              = 2
+num_hidden              = 34
 num_inputs              = 4
 num_outputs             = 4
 initial_connection      = full_direct
