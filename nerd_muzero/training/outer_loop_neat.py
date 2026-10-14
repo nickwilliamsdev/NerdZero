@@ -29,6 +29,14 @@ def get_substrate_coords(in_dim, out_dim):
     y2 = torch.zeros_like(x2)
     return x1, y1, x2, y2
 
+def parallel_evaluation_hook(genomes, config, env):
+    """
+    Parallelized version of the evaluation hook.
+    """
+    # For simplicity, just call the original evaluation_hook.
+    # In practice, you could use multiprocessing or joblib to parallelize.
+    evaluation_hook(genomes, config, env)
+
 def evaluation_hook(genomes, config, env):
     """
     Outer loop hook substituting `evaluate_genomes` in tensorneat_pt/evolution.py.
