@@ -1,10 +1,12 @@
 import torch
 
+from nerd_muzero.envs.gym_env import ARCEnv
 from nerd_muzero.models.delta_net import DeltaNetEncoder
 from nerd_muzero.models.recursive import DynamicsNetwork
 from nerd_muzero.models.prediction import PredictionNetwork
 from nerd_muzero.training.inner_loop import MuZeroAgent
 from nerd_muzero.tensorneat_pt.cppn import build_cppn
+WORKER_ENV = None
 
 def build_models(env):
     """Instantiate standard PyTorch MuZero components"""
@@ -29,13 +31,19 @@ def get_substrate_coords(in_dim, out_dim):
     y2 = torch.zeros_like(x2)
     return x1, y1, x2, y2
 
-def parallel_evaluation_hook(genomes, config, env):
+def parallel_evaluation_hook(genomes, config):
     """
     Parallelized version of the evaluation hook.
     """
+    global WORKER_ENV
+    # Each process lazily creates and reuses its own environment.
+    if WORKER_ENV is None:
+        WORKER_ENV = ARCEnv(max_steps=50)
+        torch.set_num_threads(1)  # Avoid CPU oversubscription.
+
     # For simplicity, just call the original evaluation_hook.
     # In practice, you could use multiprocessing or joblib to parallelize.
-    evaluation_hook(genomes, config, env)
+    evaluation_hook(genomes, config, WORKER_ENV)
 
 def evaluation_hook(genomes, config, env):
     """
