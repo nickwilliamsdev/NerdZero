@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 ARC_TRAINER_PATCH_ID = "arc-scratch-v3-complete"
-ARC_TRAINER_ARCH = "recursive-deltanet-v1-depth-curriculum-v13"
+ARC_TRAINER_ARCH = "recursive-deltanet-v1-multihypothesis-v14"
 
 import copy
 import random
@@ -264,6 +264,111 @@ def _recursive_loo_auxiliary(model, batch, reasoning_steps=None):
 
 
 
+def _soft_best_of_k(losses, temperature: float):
+    """Smooth best-of-K objective. losses is [B,K]."""
+    tau = max(float(temperature), 1e-4)
+    return (-tau * torch.logsumexp(-losses / tau, dim=1)).mean()
+
+
+def _hypothesis_diversity(finals, margin: float):
+    """Penalize branch collapse using cosine similarity of pooled latents."""
+    # finals: [B,K,N,D]
+    pooled = finals.mean(dim=2)
+    pooled = F.normalize(pooled, dim=-1)
+    terms = []
+    K = pooled.shape[1]
+    for i in range(K):
+        for j in range(i + 1, K):
+            sim = (pooled[:, i] * pooled[:, j]).sum(dim=-1)
+            terms.append(torch.relu(sim - float(margin)).mean())
+    if not terms:
+        return torch.zeros((), device=finals.device)
+    return torch.stack(terms).mean()
+
+
+def _hypothesis_query_objective(model, finals, target, target_shape):
+    """Per-example/per-hypothesis decoded objective [B,K]."""
+    losses = []
+    for k in range(finals.shape[1]):
+        losses.append(
+            _per_sample_grid_objective(
+                model, finals[:, k], target, target_shape
+            )
+        )
+    return torch.stack(losses, dim=1)
+
+
+def _hypothesis_loo_auxiliary(model, batch, reasoning_steps=None):
+    """Best-of-K leave-one-demo-out objective plus branch diagnostics."""
+    counts = batch.demo_mask.sum(dim=1)
+    eligible = torch.nonzero(counts >= 2, as_tuple=False).flatten()
+    if eligible.numel() == 0:
+        return None, {}
+
+    total_losses = []
+    winner_ids = []
+    max_permutations = 2
+
+    for b in eligible.tolist():
+        valid = torch.nonzero(batch.demo_mask[b], as_tuple=False).flatten()
+        perm = valid[
+            torch.randperm(valid.numel(), device=valid.device)
+        ]
+        held_ids = perm[:min(max_permutations, perm.numel())]
+
+        for held_t in held_ids:
+            held = int(held_t.item())
+
+            dx = batch.demos_x[b:b+1].clone()
+            dy = batch.demos_y[b:b+1].clone()
+            dxs = batch.demos_x_shapes[b:b+1].clone()
+            dys = batch.demos_y_shapes[b:b+1].clone()
+            dm = batch.demo_mask[b:b+1].clone()
+
+            q = dx[:, held]
+            qs = dxs[:, held]
+            y = dy[:, held]
+            ys = dys[:, held]
+            dm[:, held] = False
+
+            rule = model.encode_rule(dx, dy, dxs, dys, dm)
+            Hq = model.encode_grid(q, qs)
+            rule = model.condition_rule_on_query(rule, Hq)
+
+            finals, _ = model.multi_hypothesis_reason(
+                Hq,
+                rule,
+                steps=(reasoning_steps if reasoning_steps is not None else model.cfg.recursive_steps),
+                return_trace=True,
+            )
+            losses = _hypothesis_query_objective(
+                model, finals, y, ys
+            )  # [1,K]
+            total_losses.append(losses.squeeze(0))
+            winner_ids.append(int(losses.argmin(dim=1).item()))
+
+    if not total_losses:
+        return None, {}
+
+    mat = torch.stack(total_losses, dim=0)
+    loss = _soft_best_of_k(
+        mat, model.cfg.hypothesis_softmin_temperature
+    )
+    winner = torch.tensor(winner_ids, device=mat.device)
+    counts = torch.bincount(
+        winner, minlength=model.cfg.hypothesis_count
+    ).float()
+    probs = counts / counts.sum().clamp_min(1.0)
+    entropy = -(probs.clamp_min(1e-8) * probs.clamp_min(1e-8).log()).sum()
+
+    return loss, {
+        "hyp_loo": float(loss.detach().item()),
+        "hyp_winner_entropy": float(entropy.detach().item()),
+        "hyp_loo_count": int(mat.shape[0]),
+    }
+
+
+
 def train_arc_v1(cfg, train_data, val_data=None):
     set_seed(cfg.seed)
     torch.set_float32_matmul_precision(cfg.matmul_precision)
@@ -376,9 +481,14 @@ def train_arc_v1(cfg, train_data, val_data=None):
     # pathway at a much smaller LR. The codec and direct predictor remain frozen.
     _set_requires_grad(model, False)
     _set_requires_grad(model.recursive_cell, True)
+    model.hypothesis_embeddings.requires_grad_(True)
 
     recursive_param_groups = [
-        {"params": list(model.recursive_cell.parameters()), "lr": cfg.recursive_lr},
+        {
+            "params": list(model.recursive_cell.parameters())
+                    + [model.hypothesis_embeddings],
+            "lr": cfg.recursive_lr,
+        },
     ]
     recursive_opt = torch.optim.AdamW(
         recursive_param_groups, weight_decay=cfg.weight_decay
@@ -401,7 +511,8 @@ def train_arc_v1(cfg, train_data, val_data=None):
     rule_unfrozen = False
 
     print(
-        "ARC recursive-v13 depth curriculum: "
+        "ARC recursive-v14 multi-hypothesis K="
+        f"{cfg.hypothesis_count}; depth curriculum: "
         f"{cfg.recursive_train_steps_stage1}->"
         f"{cfg.recursive_train_steps_stage2}->"
         f"{cfg.recursive_train_steps_stage3} steps; "
@@ -439,7 +550,7 @@ def train_arc_v1(cfg, train_data, val_data=None):
             })
             rule_unfrozen = True
             print(
-                f"ARC recursive-v13 rule-adapt step={step}: "
+                f"ARC recursive-v14 rule-adapt step={step}: "
                 f"unfroze rule/query path lr="
                 f"{cfg.recursive_lr * cfg.recursive_rule_lr_scale:.2e}"
             )
@@ -454,9 +565,24 @@ def train_arc_v1(cfg, train_data, val_data=None):
         rule = model.condition_rule_on_query(rule, Hq)
         Ht = model.encode_grid(batch.target_y, batch.target_shape).detach()
 
-        Hr, info = model.recursive_reason(
+        finals, multi_info = model.multi_hypothesis_reason(
             Hq, rule, steps=train_reason_steps, return_trace=True
         )
+
+        candidate_losses = _hypothesis_query_objective(
+            model, finals, batch.target_y, batch.target_shape
+        )
+        best_of_k = _soft_best_of_k(
+            candidate_losses, cfg.hypothesis_softmin_temperature
+        )
+        diversity = _hypothesis_diversity(
+            finals, cfg.hypothesis_diversity_margin
+        )
+
+        # Keep the old recursive trajectory losses on hypothesis 0 as a
+        # stabilizing anchor while best-of-K lets the other branches specialize.
+        info = multi_info["hypotheses"][0]
+        Hr = finals[:, 0]
         Hd = info["states"][0]
 
         color_loss, shape_loss, stats = _decode_loss(
@@ -469,39 +595,54 @@ def train_arc_v1(cfg, train_data, val_data=None):
 
         intermediate = torch.zeros((), device=device)
         if len(info["states"]) > 2:
-            losses = [
+            latent_losses = [
                 (s - Ht).pow(2).mean()
                 for s in info["states"][1:-1]
             ]
-            intermediate = torch.stack(losses).mean()
+            intermediate = torch.stack(latent_losses).mean()
 
-        fast_reg = info["fast_state"].pow(2).mean()
+        fast_reg = torch.stack([
+            h["fast_state"].pow(2).mean()
+            for h in multi_info["hypotheses"]
+        ]).mean()
+
         step_grid_losses, rank_loss, per_step_grid_loss, best_step_idx, rank_logits, rank_stats = _adaptive_step_losses(
-            model, rule, info, batch.target_y, batch.target_shape
+            model, multi_info["rules"][:, 0], info,
+            batch.target_y, batch.target_shape
         )
 
         loo_final, loo_improve, loo_stats = _recursive_loo_auxiliary(
             model, batch, reasoning_steps=train_reason_steps
         )
+        hyp_loo, hyp_loo_stats = _hypothesis_loo_auxiliary(
+            model, batch, reasoning_steps=train_reason_steps
+        )
+
         loss = (
-            cfg.recursive_grid_weight * (color_loss + cfg.shape_weight * shape_loss)
+            cfg.recursive_grid_weight * best_of_k
+            + 0.25 * cfg.recursive_grid_weight * (
+                color_loss + cfg.shape_weight * shape_loss
+            )
             + cfg.recursive_latent_weight * final_latent
             + cfg.recursive_intermediate_weight * intermediate
             + cfg.recursive_consistency_weight * consistency
             + cfg.recursive_fast_reg_weight * fast_reg
-            + cfg.recursive_per_step_grid_weight * per_step_grid_loss
+            + 0.25 * cfg.recursive_per_step_grid_weight * per_step_grid_loss
+            + cfg.hypothesis_diversity_weight * diversity
         )
         if loo_final is not None:
             loss = (
                 loss
-                + cfg.recursive_loo_weight * loo_final
-                + cfg.recursive_step_improvement_weight * loo_improve
+                + 0.50 * cfg.recursive_loo_weight * loo_final
+                + 0.50 * cfg.recursive_step_improvement_weight * loo_improve
             )
+        if hyp_loo is not None:
+            loss = loss + cfg.hypothesis_loo_weight * hyp_loo
 
         recursive_opt.zero_grad(set_to_none=True)
         loss.backward()
         recursive_params = [
-            p for p in model.recursive_cell.parameters()
+            p for p in list(model.recursive_cell.parameters()) + [model.hypothesis_embeddings]
             if p.requires_grad and p.grad is not None
         ]
         if recursive_params:
@@ -536,6 +677,10 @@ def train_arc_v1(cfg, train_data, val_data=None):
                 f"looN={loo_stats.get('loo_final', float('nan')):.3f} "
                 f"looImprove={(loo_improve.item() if loo_improve is not None else float('nan')):.4f} "
                 f"looPerms={loo_stats.get('loo_permutations', 0)} "
+                f"hypBest={best_of_k.item():.4f} "
+                f"hypDiv={diversity.item():.4f} "
+                f"hypLOO={hyp_loo_stats.get('hyp_loo', float('nan')):.4f} "
+                f"hypEnt={hyp_loo_stats.get('hyp_winner_entropy', float('nan')):.3f} "
                 f"stage={'rule-adapt' if rule_unfrozen else 'cell-only'} "
                 f"trainDepth={train_reason_steps} "
                 f"bestDepth={(best_step_idx.float().mean().item() if best_step_idx is not None else float('nan')):.2f} "
@@ -551,9 +696,9 @@ def train_arc_v1(cfg, train_data, val_data=None):
             )
             print(
                 f"arc recursive val step={step:04d} exact={m['exact']:.3f} "
-                f"ensemblePixel={m['adaptive_pixel_acc']:.3f} "
-                f"fixedPixel={m['fixed_pixel_acc']:.3f} "
-                f"oraclePixel={m['oracle_pixel_acc']:.3f} "
+                f"selectedPixel={m['adaptive_pixel_acc']:.3f} "
+                f"oracleCandPixel={m['oracle_candidate_pixel_acc']:.3f} "
+                f"oracleStatePixel={m['oracle_pixel_acc']:.3f} "
                 f"directPixel={m['direct_pixel_acc']:.3f} "
                 f"gain={m['recursive_gain']:+.3f} "
                 f"hardDepth={m['avg_chosen_step']:.2f} "f"ensDepth={m.get('avg_ensemble_depth', float('nan')):.2f} score={score:.4f}"
@@ -593,7 +738,7 @@ def train_arc_v1(cfg, train_data, val_data=None):
 
     if cfg.restore_best_at_end and best_recursive is not None:
         model.load_state_dict(best_recursive, strict=True)
-        print(f"ARC recursive-v13 restored best checkpoint step={best_recursive_step}")
+        print(f"ARC recursive-v14 restored best checkpoint step={best_recursive_step}")
 
     _set_requires_grad(model, True)
 
@@ -623,10 +768,10 @@ def train_arc_v1(cfg, train_data, val_data=None):
         )
 
     print(
-        f"ARC depth-curriculum-v13 final exact={final_metrics['exact']:.3f} "
-        f"ensemblePixel={final_metrics['adaptive_pixel_acc']:.3f} "
-        f"fixedPixel={final_metrics['fixed_pixel_acc']:.3f} "
-        f"oraclePixel={final_metrics['oracle_pixel_acc']:.3f} "
+        f"ARC multihypothesis-v14 final exact={final_metrics['exact']:.3f} "
+        f"selectedPixel={final_metrics['adaptive_pixel_acc']:.3f} "
+        f"oracleCandPixel={final_metrics['oracle_candidate_pixel_acc']:.3f} "
+        f"oracleStatePixel={final_metrics['oracle_pixel_acc']:.3f} "
         f"directPixel={final_metrics['direct_pixel_acc']:.3f} "
         f"gain={final_metrics['recursive_gain']:+.3f} "
         f"hardDepth={final_metrics['avg_chosen_step']:.2f} "f"ensDepth={final_metrics.get('avg_ensemble_depth', float('nan')):.2f}"

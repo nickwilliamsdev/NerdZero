@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 ARC_PATCH_ID = "arc-scratch-v3-complete"
-ARC_RECURSIVE_TRAINING_REV = "depth-curriculum-v13"
+ARC_RECURSIVE_TRAINING_REV = "multi-hypothesis-recursion-v14"
 
 from dataclasses import dataclass
 import torch
@@ -78,6 +78,13 @@ class ARCConfig:
     recursive_train_steps_stage3: int = 10
     recursive_depth_stage2_step: int = 400
     recursive_depth_stage3_step: int = 800
+    hypothesis_count: int = 4
+    hypothesis_rule_scale: float = 0.35
+    hypothesis_softmin_temperature: float = 0.20
+    hypothesis_diversity_weight: float = 0.08
+    hypothesis_diversity_margin: float = 0.75
+    hypothesis_loo_weight: float = 1.00
+    hypothesis_selection_top_k_depths: int = 3
     recursive_heads: int = 4
     fast_state_dim: int = 32
     fast_update_scale: float = 0.35

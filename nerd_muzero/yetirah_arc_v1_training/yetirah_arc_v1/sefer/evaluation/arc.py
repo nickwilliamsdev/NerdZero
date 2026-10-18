@@ -2,7 +2,7 @@ from __future__ import annotations
 
 # Kept for compatibility with the current launcher.
 ARC_EVAL_PATCH_ID = "v1.7-demo-consistency-search"
-ARC_EVAL_ARCH = "recursive-deltanet-v1-depth-ensemble-v10"
+ARC_EVAL_ARCH = "recursive-deltanet-v1-multihypothesis-v14"
 
 from typing import Any, Dict
 import numpy as np
@@ -156,6 +156,80 @@ def _decode_weighted_states(model, states, weights):
 
 
 @torch.no_grad()
+def _score_hypotheses_on_demos(model, demos, device):
+    """Return demo-consistency scores [K,T+1] for every hypothesis/depth."""
+    K = model.cfg.hypothesis_count
+    T = model.cfg.recursive_steps
+    scores = torch.zeros(K, T + 1, device=device)
+    used = 0
+
+    if len(demos) < 2:
+        scores[:, -1] = 1.0
+        return scores
+
+    for held_idx in range(len(demos)):
+        context = [d for i, d in enumerate(demos) if i != held_idx]
+        held_in, held_out = demos[held_idx]
+        dx, dy, dxs, dys, dm, q, qs = _episode_tensors(
+            context, held_in,
+            model.cfg.max_demos, model.cfg.max_grid_size, device
+        )
+        rule = model.encode_rule(dx, dy, dxs, dys, dm)
+        Hq = model.encode_grid(q, qs)
+        rule = model.condition_rule_on_query(rule, Hq)
+        _, multi = model.multi_hypothesis_reason(
+            Hq, rule, steps=T, return_trace=True
+        )
+
+        for k, info in enumerate(multi["hypotheses"]):
+            for depth, state in enumerate(info["states"]):
+                pred = _decode_grid(model, state)
+                exact, pixel, shape = _grid_scores(pred, held_out)
+                scores[k, depth] += (
+                    pixel
+                    + model.cfg.demo_depth_exact_weight * exact
+                    + model.cfg.demo_depth_shape_weight * shape
+                )
+        used += 1
+
+    return scores / max(used, 1)
+
+
+def _select_hypothesis_and_weights(model, demo_scores):
+    """Select branch by LOO consistency, then ensemble its supported depths."""
+    K, D = demo_scores.shape
+    branch_scores = []
+    branch_weights = []
+
+    for k in range(K):
+        weights = _depth_ensemble_weights(
+            model,
+            demo_scores[k].detach().cpu().tolist(),
+            demo_scores.device,
+            demo_scores.dtype,
+        )
+        branch_weights.append(weights)
+        branch_scores.append((weights * demo_scores[k]).sum())
+
+    branch_scores = torch.stack(branch_scores)
+    chosen = int(branch_scores.argmax().item())
+    return chosen, branch_weights[chosen], branch_scores
+
+
+def _decoded_candidate_diversity(preds):
+    """Average pairwise disagreement over overlapping decoded cells."""
+    vals = []
+    for i in range(len(preds)):
+        for j in range(i + 1, len(preds)):
+            a, b = preds[i], preds[j]
+            h = min(a.shape[0], b.shape[0])
+            w = min(a.shape[1], b.shape[1])
+            if h and w:
+                vals.append(float(np.mean(a[:h, :w] != b[:h, :w])))
+    return float(np.mean(vals)) if vals else 0.0
+
+
+@torch.no_grad()
 def predict_arc(model, demos, query_x, device=None,
                 return_direct: bool = False, return_details: bool = False):
     device = device or next(model.parameters()).device
@@ -167,39 +241,35 @@ def predict_arc(model, demos, query_x, device=None,
     rule = model.encode_rule(dx, dy, dxs, dys, dm)
     Hq = model.encode_grid(q, qs)
     rule = model.condition_rule_on_query(rule, Hq)
-    _, info = model.recursive_reason(
+
+    _, multi = model.multi_hypothesis_reason(
         Hq, rule, steps=cfg.recursive_steps, return_trace=True
     )
+    demo_scores = _score_hypotheses_on_demos(model, demos, device)
+    chosen_hyp, depth_weights, branch_scores = _select_hypothesis_and_weights(
+        model, demo_scores
+    )
 
-    chosen_depth, demo_depth_scores = _select_depth_from_demos(
-        model, demos, device
+    chosen_info = multi["hypotheses"][chosen_hyp]
+    pred = _decode_weighted_states(
+        model, chosen_info["states"], depth_weights
     )
-    ensemble_weights = _depth_ensemble_weights(
-        model, demo_depth_scores, device, rule.dtype
-    )
-    adaptive_grid = _decode_weighted_states(
-        model, info["states"], ensemble_weights
-    )
-    direct_grid = _decode_grid(model, info["states"][0])
-    fixed_grid = _decode_grid(model, info["states"][-1])
+    direct_grid = _decode_grid(model, chosen_info["states"][0])
 
     details = {
-        "mode": "adaptive_recursive_deltanet",
-        "chosen_step": int(chosen_depth),
-        "ensemble_weights": ensemble_weights.detach().cpu().tolist(),
-        "demo_depth_scores": demo_depth_scores,
-        "halt_probs": [
-            float(torch.sigmoid(x).item()) for x in info["halt_logits"]
-        ],
-        "fixed_grid": fixed_grid,
+        "mode": "multi_hypothesis_recursive_deltanet",
+        "chosen_hypothesis": chosen_hyp,
+        "branch_scores": branch_scores.detach().cpu().tolist(),
+        "depth_weights": depth_weights.detach().cpu().tolist(),
+        "demo_scores": demo_scores.detach().cpu().tolist(),
         "direct_grid": direct_grid,
     }
 
     if return_details:
-        return adaptive_grid, [], direct_grid, details
+        return pred, [], direct_grid, details
     if return_direct:
-        return adaptive_grid, [], direct_grid
-    return adaptive_grid, []
+        return pred, [], direct_grid
+    return pred, []
 
 
 @torch.no_grad()
@@ -242,115 +312,131 @@ def evaluate_arc(model, dataset, limit: int = 64, device=None) -> Dict[str, Any]
     was_training = model.training
     model.eval()
 
-    adaptive_exact = adaptive_pixel = adaptive_shape = 0.0
-    fixed_exact = fixed_pixel = fixed_shape = 0.0
+    selected_exact = selected_pixel = selected_shape = 0.0
     direct_exact = direct_pixel = direct_shape = 0.0
-    oracle_exact = oracle_pixel = oracle_shape = 0.0
-    step_pixel_sum = [0.0 for _ in range(model.cfg.recursive_steps + 1)]
-    chosen_step_sum = 0.0
-    oracle_step_sum = 0.0
-    ensemble_depth_sum = 0.0
-    ensemble_entropy_sum = 0.0
+    oracle_candidate_exact = oracle_candidate_pixel = oracle_candidate_shape = 0.0
+    oracle_state_exact = oracle_state_pixel = oracle_state_shape = 0.0
+    selected_hyp_sum = 0.0
+    oracle_hyp_sum = 0.0
+    diversity_sum = 0.0
     n = 0
 
     for _, demos, qx, target in dataset.evaluation_episodes(limit=limit):
         dx, dy, dxs, dys, dm, q, qs = _episode_tensors(
-            demos, qx, model.cfg.max_demos, model.cfg.max_grid_size, device
+            demos, qx, model.cfg.max_demos,
+            model.cfg.max_grid_size, device
         )
         rule = model.encode_rule(dx, dy, dxs, dys, dm)
         Hq = model.encode_grid(q, qs)
         rule = model.condition_rule_on_query(rule, Hq)
-        _, info = model.recursive_reason(
+
+        _, multi = model.multi_hypothesis_reason(
             Hq, rule, steps=model.cfg.recursive_steps, return_trace=True
         )
-
-        chosen_depth, demo_depth_scores = _select_depth_from_demos(
-            model, demos, device
+        demo_scores = _score_hypotheses_on_demos(model, demos, device)
+        chosen_hyp, chosen_weights, branch_scores = _select_hypothesis_and_weights(
+            model, demo_scores
         )
-        ensemble_weights = _depth_ensemble_weights(
-            model, demo_depth_scores, device, rule.dtype
-        )
-        adaptive_pred = _decode_weighted_states(
-            model, info["states"], ensemble_weights
-        )
-        fixed_pred = _decode_grid(model, info["states"][-1])
-        direct_pred = _decode_grid(model, info["states"][0])
 
-        ae, ap, ash = _grid_scores(adaptive_pred, target)
-        fe, fp, fsh = _grid_scores(fixed_pred, target)
-        de, dp, dsh = _grid_scores(direct_pred, target)
+        candidate_preds = []
+        candidate_triplets = []
+        for k, info in enumerate(multi["hypotheses"]):
+            weights = _depth_ensemble_weights(
+                model,
+                demo_scores[k].detach().cpu().tolist(),
+                device,
+                rule.dtype,
+            )
+            p = _decode_weighted_states(model, info["states"], weights)
+            candidate_preds.append(p)
+            candidate_triplets.append(_grid_scores(p, target))
 
-        adaptive_exact += ae
-        adaptive_pixel += ap
-        adaptive_shape += ash
-        fixed_exact += fe
-        fixed_pixel += fp
-        fixed_shape += fsh
+        selected_pred = candidate_preds[chosen_hyp]
+        se, sp, ss = candidate_triplets[chosen_hyp]
+        selected_exact += se
+        selected_pixel += sp
+        selected_shape += ss
+        selected_hyp_sum += chosen_hyp
+
+        # Direct baseline uses the unperturbed rule/direct predictor.
+        Hd = model.predict_goal(Hq, rule)
+        direct_pred = _decode_grid(model, Hd)
+        de, dp, ds = _grid_scores(direct_pred, target)
         direct_exact += de
         direct_pixel += dp
-        direct_shape += dsh
-        chosen_step_sum += float(chosen_depth)
-        depth_axis = torch.arange(len(ensemble_weights), device=device, dtype=ensemble_weights.dtype)
-        ensemble_depth_sum += float((ensemble_weights * depth_axis).sum().item())
-        ensemble_entropy_sum += float((-(ensemble_weights.clamp_min(1e-8) * ensemble_weights.clamp_min(1e-8).log()).sum()).item())
+        direct_shape += ds
 
-        # Oracle is diagnostic only: choose the target-best decoded state,
-        # including step 0/direct. It is never used to make a real prediction.
-        state_scores = []
-        state_triplets = []
-        for i, state in enumerate(info["states"]):
-            triplet = _grid_scores(_decode_grid(model, state), target)
-            state_triplets.append(triplet)
-            step_pixel_sum[i] += triplet[1]
-            state_scores.append((triplet[0], triplet[1], triplet[2]))
-
-        oracle_idx = max(
-            range(len(state_scores)),
-            key=lambda i: (state_scores[i][0], state_scores[i][1], state_scores[i][2]),
+        # Oracle candidate: target chooses among branch-level predictions only.
+        oracle_hyp = max(
+            range(len(candidate_triplets)),
+            key=lambda k: (
+                candidate_triplets[k][0],
+                candidate_triplets[k][1],
+                candidate_triplets[k][2],
+            ),
         )
-        oe, op, osh = state_triplets[oracle_idx]
-        oracle_exact += oe
-        oracle_pixel += op
-        oracle_shape += osh
-        oracle_step_sum += oracle_idx
+        oce, ocp, ocs = candidate_triplets[oracle_hyp]
+        oracle_candidate_exact += oce
+        oracle_candidate_pixel += ocp
+        oracle_candidate_shape += ocs
+        oracle_hyp_sum += oracle_hyp
+
+        # Oracle state: target chooses any hypothesis at any depth.
+        all_states = []
+        for k, info in enumerate(multi["hypotheses"]):
+            for depth, state in enumerate(info["states"]):
+                triplet = _grid_scores(_decode_grid(model, state), target)
+                all_states.append((triplet, k, depth))
+        best_state = max(
+            all_states,
+            key=lambda x: (x[0][0], x[0][1], x[0][2]),
+        )
+        ose, osp, oss = best_state[0]
+        oracle_state_exact += ose
+        oracle_state_pixel += osp
+        oracle_state_shape += oss
+
+        diversity_sum += _decoded_candidate_diversity(candidate_preds)
         n += 1
 
     if was_training:
         model.train()
 
     d = max(n, 1)
-    step_pixels = [x / d for x in step_pixel_sum]
-    adaptive_pixel_acc = adaptive_pixel / d
+    selected_pixel_acc = selected_pixel / d
     direct_pixel_acc = direct_pixel / d
 
     return {
-        # Active inference path.
-        "exact": adaptive_exact / d,
-        "pixel_acc": adaptive_pixel_acc,
-        "shape_acc": adaptive_shape / d,
+        "exact": selected_exact / d,
+        "pixel_acc": selected_pixel_acc,
+        "shape_acc": selected_shape / d,
 
-        "adaptive_exact": adaptive_exact / d,
-        "adaptive_pixel_acc": adaptive_pixel_acc,
-        "adaptive_shape_acc": adaptive_shape / d,
+        "adaptive_exact": selected_exact / d,
+        "adaptive_pixel_acc": selected_pixel_acc,
+        "adaptive_shape_acc": selected_shape / d,
 
-        "fixed_exact": fixed_exact / d,
-        "fixed_pixel_acc": fixed_pixel / d,
-        "fixed_shape_acc": fixed_shape / d,
+        # Backward-compatible keys. Candidate selection replaces fixed-depth.
+        "fixed_exact": selected_exact / d,
+        "fixed_pixel_acc": selected_pixel_acc,
+        "fixed_shape_acc": selected_shape / d,
 
         "direct_exact": direct_exact / d,
         "direct_pixel_acc": direct_pixel_acc,
         "direct_shape_acc": direct_shape / d,
 
-        "oracle_exact": oracle_exact / d,
-        "oracle_pixel_acc": oracle_pixel / d,
-        "oracle_shape_acc": oracle_shape / d,
+        "oracle_candidate_exact": oracle_candidate_exact / d,
+        "oracle_candidate_pixel_acc": oracle_candidate_pixel / d,
+        "oracle_candidate_shape_acc": oracle_candidate_shape / d,
 
-        "recursive_gain": adaptive_pixel_acc - direct_pixel_acc,
-        "step_pixel_acc": step_pixels,
-        "avg_chosen_step": chosen_step_sum / d,
-        "avg_ensemble_depth": ensemble_depth_sum / d,
-        "avg_ensemble_entropy": ensemble_entropy_sum / d,
-        "avg_oracle_step": oracle_step_sum / d,
+        "oracle_exact": oracle_state_exact / d,
+        "oracle_pixel_acc": oracle_state_pixel / d,
+        "oracle_shape_acc": oracle_state_shape / d,
+
+        "recursive_gain": selected_pixel_acc - direct_pixel_acc,
+        "avg_chosen_step": selected_hyp_sum / d,
+        "avg_ensemble_depth": 0.0,
+        "avg_oracle_step": oracle_hyp_sum / d,
+        "candidate_diversity": diversity_sum / d,
         "count": n,
     }
 

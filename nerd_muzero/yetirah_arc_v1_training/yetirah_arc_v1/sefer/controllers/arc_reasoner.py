@@ -2,7 +2,7 @@ from __future__ import annotations
 
 # Kept for compatibility with the current launcher.
 ARC_REASONER_PATCH_ID = "v1.8-refreshable-cppn-base"
-ARC_REASONER_ARCH = "recursive-deltanet-v1-demo-controller-v9"
+ARC_REASONER_ARCH = "recursive-deltanet-v1-multihypothesis-v14"
 
 import torch
 import torch.nn as nn
@@ -93,6 +93,13 @@ class ARCReasoner(nn.Module):
             decay_max=cfg.fast_decay_max,
         )
 
+        # Shared-weight hypothesis branches.  The embeddings perturb the task
+        # rule, while every branch reuses the same direct predictor and
+        # recursive DeltaNet cell.
+        self.hypothesis_embeddings = nn.Parameter(
+            torch.randn(cfg.hypothesis_count, cfg.rule_dim) * 0.02
+        )
+
         # Rich task-conditioned state ranker.
         # Ranking features are detached from the solver so selector training
         # cannot distort a recursive trajectory that is already useful.
@@ -109,24 +116,6 @@ class ARCReasoner(nn.Module):
             nn.Linear(cfg.rule_dim, cfg.rule_dim),
             nn.GELU(),
             nn.Linear(cfg.rule_dim, 1),
-        )
-
-        # v9 controller: maps a task's leave-one-demo-out depth profile plus
-        # query trajectory diagnostics to the depth to use on the real query.
-        self.depth_controller_task_proj = nn.Sequential(
-            nn.LayerNorm(cfg.rule_dim),
-            nn.Linear(cfg.rule_dim, cfg.node_dim),
-            nn.GELU(),
-        )
-        depth_count = cfg.recursive_steps + 1
-        controller_in = cfg.node_dim + depth_count * 3
-        self.depth_controller = nn.Sequential(
-            nn.LayerNorm(controller_in),
-            nn.Linear(controller_in, cfg.rule_dim),
-            nn.GELU(),
-            nn.Linear(cfg.rule_dim, cfg.rule_dim),
-            nn.GELU(),
-            nn.Linear(cfg.rule_dim, depth_count),
         )
 
     def encode_grid(self, grid: torch.Tensor, shapes: torch.Tensor) -> torch.Tensor:
@@ -204,58 +193,43 @@ class ARCReasoner(nn.Module):
             }
         return state
 
-    def score_demo_conditioned_depth(self, rule, info, demo_depth_profile):
-        """Score depth 0..T from task-local LOO evidence + query trajectory.
+    def hypothesis_rules(self, rule: torch.Tensor):
+        """Return K distinct task rules, [B,K,R]."""
+        offsets = torch.tanh(self.hypothesis_embeddings)
+        offsets = self.cfg.hypothesis_rule_scale * offsets
+        return rule[:, None, :] + offsets[None, :, :]
 
-        demo_depth_profile: [B,T+1], lower is better.  It is normalized per
-        task before entering the controller so scale differences across ARC
-        tasks do not dominate.
-        """
-        states = info["states"]
-        B = rule.shape[0]
-        K = len(states)
+    def multi_hypothesis_reason(
+        self,
+        H: torch.Tensor,
+        rule: torch.Tensor,
+        steps: int | None = None,
+        return_trace: bool = False,
+    ):
+        """Run K hypothesis branches through the shared recursive solver."""
+        rules = self.hypothesis_rules(rule)
+        finals = []
+        infos = []
 
-        profile = demo_depth_profile.detach()
-        pmean = profile.mean(dim=1, keepdim=True)
-        pstd = profile.std(dim=1, keepdim=True, unbiased=False).clamp_min(1e-4)
-        profile_z = (profile - pmean) / pstd
-
-        state_norms = []
-        delta_norms = []
-        prev = states[0].detach()
-        for i, state in enumerate(states):
-            s = state.detach()
-            state_norms.append(
-                s.pow(2).mean(dim=(1, 2)).sqrt()
-            )
-            if i == 0:
-                delta_norms.append(torch.zeros(B, device=s.device, dtype=s.dtype))
-            else:
-                delta_norms.append(
-                    (s - prev).pow(2).mean(dim=(1, 2)).sqrt()
+        for k in range(self.cfg.hypothesis_count):
+            if return_trace:
+                final, info = self.recursive_reason(
+                    H, rules[:, k], steps=steps, return_trace=True
                 )
-            prev = s
+                finals.append(final)
+                infos.append(info)
+            else:
+                finals.append(
+                    self.recursive_reason(H, rules[:, k], steps=steps)
+                )
 
-        state_norms = torch.stack(state_norms, dim=1)
-        delta_norms = torch.stack(delta_norms, dim=1)
-
-        task_vec = self.depth_controller_task_proj(rule.detach())
-        feat = torch.cat(
-            [task_vec, profile_z, state_norms, delta_norms],
-            dim=-1,
-        )
-        return self.depth_controller(feat)
-
-    def select_demo_conditioned_depth(self, rule, info, demo_depth_profile):
-        logits = self.score_demo_conditioned_depth(
-            rule, info, demo_depth_profile
-        )
-        chosen = logits.argmax(dim=1)
-        stacked = torch.stack(info["states"], dim=1)
-        bidx = torch.arange(stacked.shape[0], device=stacked.device)
-        selected = stacked[bidx, chosen]
-        return selected, chosen, logits
-
+        final_stack = torch.stack(finals, dim=1)  # [B,K,N,D]
+        if return_trace:
+            return final_stack, {
+                "rules": rules,
+                "hypotheses": infos,
+            }
+        return final_stack
 
     def score_recursive_states(self, rule, info):
         """Score state 0..T using detached task/state diagnostics.
