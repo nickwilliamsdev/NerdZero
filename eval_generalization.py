@@ -1,7 +1,8 @@
-"""Generalization check: evaluate the gated winner and the best deltanet
-winner (dn24_sgd24) on 10 INDEPENDENT random 8-task splits (separate seeds,
-same grid/protocol).  The fixed-eval numbers measure luck on one held-out
-set; this measures how the genomes actually generalize across ARC tasks.
+"""Generalization check: evaluate the pure_attn (kqv, 4-output CPPN) winner
+against the gated and deltanet winners on 10 INDEPENDENT random 8-task
+splits (same grid/protocol).  The fixed-eval numbers measure luck on one
+held-out set; this measures how the genomes actually generalize across ARC
+tasks.
 """
 import pickle
 import random
@@ -20,6 +21,7 @@ def make_cfg(phen, dim, sgd_steps, seed):
         phenotype=phen, attn_dim=dim, attn_heads=2, attn_layers=1,
         grid_size=GRID, pop_size=4, n_eval=8, seed=seed,
         fixed_eval=True, sgd_steps=sgd_steps, eval_sgd_steps=6,
+        cppn_num_outputs=4 if phen == "pure_attn" else 1,
     )
 
 
@@ -32,7 +34,8 @@ def sample_split(store, cfg, split_seed):
 def build_ctx(cfg):
     template = T.build_phenotype(cfg)
     n_types = len({T._layer_type(n) for n, _ in template.named_parameters()})
-    schema = "layer" if n_types >= 4 else "flat"
+    schema = "kqv" if cfg.phenotype == "pure_attn" else (
+        "layer" if n_types >= 4 else "flat")
     pc = T.build_param_coords(template, cfg.substrate_dim,
                               torch.device("cpu"), schema=schema)
     neat_cfg = T.build_neat_config(cfg)
@@ -40,9 +43,12 @@ def build_ctx(cfg):
 
 
 def pure_eval(genome, cfg, eps, pc, neat_cfg, device):
+    n_out = cfg.cppn_num_outputs
     cppn = T.create_torch_cppn(
         genome=genome, config=neat_cfg,
-        leaf_names=[f"c{i}" for i in range(pc.dim)], node_names=["w"],
+        leaf_names=[f"c{i}" for i in range(pc.dim)],
+        node_names=["k", "q", "v", "rest"][:n_out],
+        output_mode="tensor" if n_out > 1 else "auto",
     )
     phen = T.build_phenotype(cfg)
     accs = []
@@ -61,6 +67,8 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     genomes = {
+        "pureattn24_e8": ("cppn_arc_pureattn24_e8.pkl",
+                          make_cfg("pure_attn", 24, 24, SEED)),
         "gated_sgd24_e8": ("cppn_arc_gated_sgd24_e8.pkl",
                            make_cfg("gated", 24, 24, SEED)),
         "dn24_sgd24_e8": ("cppn_arc_dn24_sgd24_e8.pkl",

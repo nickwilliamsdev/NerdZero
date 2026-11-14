@@ -98,7 +98,21 @@ encode → SGD → accuracy plumbing is identical across them.
   conv stem + head), combined by a **softmax gate** over 3 scalars. The gate is
   itself a phenotype parameter the CPPN encodes, so in-context SGD can tune the
   branch mix per task; the design intent is "the CPPN picks which layer type
-  dominates per task family." This is the current best performer.
+  dominates per task family."
+* **pure_attn** — attention only: a stack of plain multi-head attention blocks
+  (`PureAttnBlock`) over the cell-token sequence + colour head. Each block uses
+  **separate** k/q/v projections (own `nn.Linear`, no bias) instead of one
+  fused in-projection, so the three attention projections are individually
+  addressable parameters. This phenotype pairs with a **4-output CPPN**
+  (`cppn_num_outputs=4`, auto for `--phenotype pure_attn`): CPPN output
+  channel 0 encodes the k-projection weights, 1 the q-projection, 2 the
+  v-projection, 3 everything else (embeddings, FFN, norms, head, biases).
+  `encode()` dispatches each parameter's substrate chunk to the channel that
+  owns it (by name prefix), so the generator gets a dedicated response surface
+  per projection. Substrate is the **kqv schema** (auto for pure_attn):
+  axis 0 = projection code (k/q/v/other), axis 1 = layer index, axes 2–4 =
+  position within the tensor — the k/q/v weight matrices occupy well-separated
+  regions of the substrate, matching the 4-channel generator.
 
 Token sequence layout (`episode_to_sequence`): `[demo0_in][demo0_out]…[query_in]`,
 each demo grid truncated to its true size; the query-in grid stays full `S x S`
@@ -184,12 +198,15 @@ python train_cppn_arc.py \
   --save-name cppn_arc_gated_task05_e8.pkl
 ```
 
-Relevant flags: `--phenotype {conv,attn,deltanet,mixed,gated}`, `--attn-dim/heads/layers`,
-`--grid-size`, `--cppn-hidden`, `--pop-size`, `--n-eval`, `--sgd-steps`,
-`--eval-sgd-steps`, `--meta-loss {delta,maml}`, `--meta-loss-weight {mean,per_param}`,
+Relevant flags: `--phenotype {conv,attn,deltanet,mixed,gated,pure_attn}`, `--attn-dim/heads/layers`,
+`--grid-size`, `--cppn-hidden`, `--cppn-outputs` (0 = auto: 4 for pure_attn, 1 otherwise),
+`--pop-size`, `--n-eval`, `--sgd-steps`, `--eval-sgd-steps`,
+`--meta-loss {delta,maml}`, `--meta-loss-weight {mean,per_param}`,
 `--gate-meta {delta,task}`, `--gate-task-scale`, `--substrate-dim`, `--substrate-radius`,
-`--coord-schema {auto,layer,flat}`, `--dynamic-substrate/--no-dynamic-substrate`,
+`--coord-schema {auto,layer,flat,kqv}`, `--dynamic-substrate/--no-dynamic-substrate`,
 `--fixed-eval`, `--seed`, `--save-name`, `--device`.
+`check_pure_attn.py` unit-checks the pure_attn/kqv/4-output plumbing (forward
+finiteness, kqv regions, per-channel encode dispatch, per-channel meta-grad).
 
 ---
 

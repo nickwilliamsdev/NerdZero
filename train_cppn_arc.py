@@ -80,7 +80,7 @@ class Config:
     out_channels: int = 10       # one-hot of the 10 ARC colours
 
     # Phenotype (the network the CPPN encodes) -- keep it small
-    phenotype: str = "attn"       # "conv" | "attn" | "deltanet"
+    phenotype: str = "attn"       # "conv" | "attn" | "deltanet" | "pure_attn"
     channels: int = 8            # hidden channels of the conv phenotype
     attn_dim: int = 48           # sequence-model hidden dim
     attn_heads: int = 4          # attention heads
@@ -99,6 +99,7 @@ class Config:
     # NEAT outer loop
     pop_size: int = 12           # small population (intensive fitness fn)
     cppn_num_hidden: int = 14    # small CPPN
+    cppn_num_outputs: int = 1    # CPPN output channels; 4 for pure_attn (k, q, v, rest)
     generations: int = 20
 
     # Dynamic substrate: condition the CPPN query substrate on the input grid
@@ -210,8 +211,8 @@ def neat_config_text(num_inputs: int, num_outputs: int, num_hidden: int,
 
 def build_neat_config(cfg: Config) -> neat.Config:
     with tempfile.NamedTemporaryFile("w", delete=False) as f:
-        f.write(neat_config_text(cfg.substrate_dim, 1, cfg.cppn_num_hidden,
-                                 cfg.pop_size, cfg.seed))
+        f.write(neat_config_text(cfg.substrate_dim, cfg.cppn_num_outputs,
+                                 cfg.cppn_num_hidden, cfg.pop_size, cfg.seed))
         name = f.name
     return neat.Config(
         neat.DefaultGenome, neat.DefaultReproduction,
@@ -264,6 +265,8 @@ def build_phenotype(cfg: Config) -> nn.Module:
         return ArcMixedPhenotype(cfg).to(cfg.resolve_device())
     if cfg.phenotype == "gated":
         return ArcGatedPhenotype(cfg).to(cfg.resolve_device())
+    if cfg.phenotype == "pure_attn":
+        return ArcPureAttnPhenotype(cfg).to(cfg.resolve_device())
     raise ValueError(f"unknown phenotype: {cfg.phenotype!r}")
 
 
@@ -397,6 +400,78 @@ class ArcAttnPhenotype(nn.Module):
         h = self.encoder(x)                                   # [1,L,d]
         q = h[0, seq.query_start:seq.query_start + seq.n_query]  # [Q,d]
         logits = self.head(q)                                 # [Q, out]
+        return logits.reshape(1, self.out_channels, s, s)
+
+
+class PureAttnBlock(nn.Module):
+    """One plain multi-head self-attention block with SEPARATE key/query/value
+    projections (q, k, v each get their own nn.Linear instead of one fused
+    in_proj) -- so a 3-output CPPN can encode the three projection weight
+    matrices independently, one output channel per K/Q/V.
+
+    The FFN part and head biases still come from CPPN output channel 3
+    ("rest"), so exactly three CPPN outputs carry the k/q/v weight matrices.
+    """
+    def __init__(self, d: int, H: int):
+        super().__init__()
+        assert d % H == 0
+        self.d = d
+        self.H = H
+        self.head_dim = d // H
+        self.k_proj = nn.Linear(d, d, bias=False)
+        self.q_proj = nn.Linear(d, d, bias=False)
+        self.v_proj = nn.Linear(d, d, bias=False)
+        self.out_proj = nn.Linear(d, d)
+        self.ff1 = nn.Linear(d, 4 * d)
+        self.ff2 = nn.Linear(4 * d, d)
+        self.ln1 = nn.LayerNorm(d)
+        self.ln2 = nn.LayerNorm(d)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # x: [1, L, d]
+        b, l, d = x.shape
+        H, hd = self.H, self.head_dim
+        q = self.q_proj(self.ln1(x)).view(b, l, H, hd).transpose(1, 2)
+        k = self.k_proj(self.ln1(x)).view(b, l, H, hd).transpose(1, 2)
+        v = self.v_proj(self.ln1(x)).view(b, l, H, hd).transpose(1, 2)
+        a = F.scaled_dot_product_attention(q, k, v)
+        a = a.transpose(1, 2).reshape(b, l, d)
+        x = x + self.out_proj(a)
+        x = x + self.ff2(F.gelu(self.ff1(self.ln2(x))))
+        return x
+
+
+class ArcPureAttnPhenotype(nn.Module):
+    """Few-shot ARC solver: pure attention only (no conv, no DeltaNet).
+
+    A stack of plain multi-head attention layers over the cell-token sequence
+    plus a colour head.  Every layer exposes separate k_proj / q_proj /
+    v_proj matrices; with `cppn_num_outputs=4` the CPPN emits a 4-channel
+    output per substrate point -- channel 0 = key weights, 1 = query weights,
+    2 = value weights, 3 = everything else (embeddings, FFN, norms, head,
+    biases) -- so the HyperNEAT generator specialises its response surface
+    for each of the three attention projections independently of the rest of
+    the network.
+    """
+    def __init__(self, cfg: Config):
+        super().__init__()
+        d, H, L = cfg.attn_dim, cfg.attn_heads, cfg.attn_layers
+        self.embed = CellEmbedder(cfg)
+        self.blocks = nn.ModuleList([PureAttnBlock(d, H) for _ in range(L)])
+        self.head = nn.Linear(d, cfg.out_channels)
+        self.out_channels = cfg.out_channels
+        self.grid_size = cfg.grid_size
+
+    def forward(self, ep: Episode) -> torch.Tensor:
+        seq = episode_to_sequence(ep, self.head.weight.device)
+        s = seq.grid_size
+        seq_frac = (seq.seq_idx.float() / max(1, s * s - 1))
+        x = self.embed(seq.tokens, seq.row, seq.col, seq.role,
+                       seq_frac).unsqueeze(0)        # [1,L,d]
+        for blk in self.blocks:
+            x = blk(x)
+        q = x[0, seq.query_start:seq.query_start + seq.n_query]   # [Q,d]
+        logits = self.head(q)                                    # [Q, out]
         return logits.reshape(1, self.out_channels, s, s)
 
 
@@ -720,6 +795,14 @@ def build_param_coords(phen: nn.Module, dim: int, device,
       projection are indistinguishable abstract points here.  Works for any
       ``dim``.
 
+    * "kqv" -- kqv-aware 5-D schema for the pure_attn phenotype:
+        axis 0  projection code   (k / q / v / other)
+        axis 1  layer index
+        axes 2-4  position within the tensor
+      The key/query/value projection matrices get their own substrate
+      regions, so a 4-output CPPN (one channel per k/q/v plus "rest") can
+      specialise the generator per projection.
+
     Coordinates are normalised to [0, 1] per axis and built on the given device
     (CPU in practice, since the CPPN is kept on CPU).  The encoded vector is
     moved to the phenotype's device (differentiable) for the loss.  The CPPN is
@@ -763,6 +846,38 @@ def build_param_coords(phen: nn.Module, dim: int, device,
                 base = side ** axis
                 digit = (m // base) % side
                 coords[i, axis] = digit / max(1, side - 1) if side > 1 else 0.0
+    elif schema == "kqv":
+        # kqv-aware schema for the pure_attn phenotype (``dim`` must be 5).
+        #   axis 0  projection code:  k / q / v / other
+        #   axis 1  layer index       (position of the param within the network)
+        #   axes 2-4  position within the parameter tensor
+        # The three projection matrices live in well-separated substrate
+        # regions, so a (multi-output) CPPN can place the k/q/v response
+        # surface structures independently of everything else.
+        if dim != 5:
+            raise ValueError(f"kqv substrate requires dim=5, got {dim}")
+        n_params = max(1, len(names))
+        for idx, (name, shape, r0) in enumerate(zip(names, shapes, offsets)):
+            low = name.lower()
+            if "k_proj" in low:
+                ax0 = 0.0
+            elif "q_proj" in low:
+                ax0 = 1.0 / 3.0
+            elif "v_proj" in low:
+                ax0 = 2.0 / 3.0
+            else:
+                ax0 = 1.0
+            ax1 = idx / max(1, n_params - 1) if n_params > 1 else 0.0
+            numel = 1
+            for s in shape:
+                numel *= s
+            for i in range(numel):
+                coords[r0 + i, 0] = ax0
+                coords[r0 + i, 1] = ax1
+                fracs = _element_positions(shape, i)
+                for axis in range(2, dim):
+                    if axis - 2 < len(fracs):
+                        coords[r0 + i, axis] = fracs[axis - 2]
     else:
         raise ValueError(f"unknown coordinate schema: {schema!r}")
 
@@ -835,11 +950,39 @@ def encode(cppn: TorchCPPN, pc: ParamCoords, substrate: torch.Tensor) -> torch.T
 
     `substrate` is [N, D] -- the (fixed or dynamic) query points.  The CPPN's
     tanh output is scaled per-parameter to a proper init magnitude.
+
+    Multi-output CPPNs (4 channels for pure_attn: k / q / v / rest) are
+    dispatched per parameter: each parameter's coordinates are fed to every
+    output channel, and the channel owning that parameter (by name prefix)
+    supplies its encoded values -- the other channels are evaluated on the
+    same points but never selected, so they carry no gradient.
     """
-    kwargs = {
-        f"c{i}": substrate[:, i] for i in range(pc.dim)
-    }
-    out = cppn(**kwargs).reshape(-1)
+    if pc.dim == 5 and hasattr(cppn, "output_nodes") and len(cppn.output_nodes) > 1:
+        kwargs = {f"c{i}": substrate[:, i] for i in range(pc.dim)}
+        outs = cppn(**kwargs)                          # output_mode="tensor" -> [N, C]
+        if outs.dim() == 1:
+            outs = outs.unsqueeze(1)
+        elif outs.dim() == 2:
+            outs = outs.transpose(0, 1)                # -> [C, N]
+        chunks = []
+        for name, shape, off in zip(pc.names, pc.shapes, pc.offsets):
+            numel = int(np.prod(shape))
+            low = name.lower()
+            if "k_proj" in low:
+                ch = 0
+            elif "q_proj" in low:
+                ch = 1
+            elif "v_proj" in low:
+                ch = 2
+            else:
+                ch = outs.shape[0] - 1
+            chunks.append(outs[ch, off:off + numel])
+        out = torch.cat(chunks, dim=0)
+    else:
+        kwargs = {
+            f"c{i}": substrate[:, i] for i in range(pc.dim)
+        }
+        out = cppn(**kwargs).reshape(-1)
     if out.shape[0] != pc.flat_size:
         raise RuntimeError(
             f"CPPN encoded {out.shape[0]} values but phenotype has "
@@ -1122,11 +1265,13 @@ def evaluate_genome(genome, neat_cfg, pc: ParamCoords, sgd_ep: Episode,
     same genome encodes task-dependent weights.
     """
     dim = pc.dim
+    n_out = cfg.cppn_num_outputs
     cppn = create_torch_cppn(
         genome=genome,
         config=neat_cfg,
         leaf_names=[f"c{i}" for i in range(dim)],
-        node_names=["w"],
+        node_names=["k", "q", "v", "rest"][:n_out],
+        output_mode="tensor" if n_out > 1 else "auto",
     )  # CPU
     cppn_opt = torch.optim.SGD(cppn.parameters(), lr=cfg.cppn_lr)
 
@@ -1262,13 +1407,23 @@ def make_evaluator(cfg: Config):
     n_types = len({_layer_type(n) for n, _ in template.named_parameters()})
     schema = cfg.coord_schema
     if schema == "auto":
-        # A/B evidence (5 gens, seed 0, grid 10, dim 24): layer-aware clearly
-        # wins for the mixed phenotype (4 types: .65 vs .43 winner) and
-        # clearly LOSES for deltanet (3 types: .35 vs .65), because two of the
-        # five substrate axes are near-constant when few types exist.  The
-        # threshold is a heuristic calibrated on that single-seed comparison;
-        # raise it (always-flat) if more seeds confirm the 3-type result.
-        schema = "layer" if n_types >= 4 else "flat"
+        # pure_attn: kqv-aware schema, so the key/query/value projection
+        # matrices get their own substrate regions (matches the 4-output
+        # CPPN: one channel per k/q/v plus "rest").
+        if cfg.phenotype == "pure_attn":
+            schema = "kqv"
+        else:
+            # A/B evidence (5 gens, seed 0, grid 10, dim 24): layer-aware clearly
+            # wins for the mixed phenotype (4 types: .65 vs .43 winner) and
+            # clearly LOSES for deltanet (3 types: .35 vs .65), because two of the
+            # five substrate axes are near-constant when few types exist.  The
+            # threshold is a heuristic calibrated on that single-seed comparison;
+            # raise it (always-flat) if more seeds confirm the 3-type result.
+            schema = "layer" if n_types >= 4 else "flat"
+    if cfg.phenotype == "pure_attn" and schema != "kqv":
+        raise ValueError(
+            "pure_attn requires the kqv substrate schema "
+            f"(got {schema!r})")
     pc = build_param_coords(template, cfg.substrate_dim, torch.device("cpu"),
                             schema=schema)
 
@@ -1389,12 +1544,19 @@ def main(argv: Optional[Sequence[str]] = None):
     ap.add_argument("--generations", type=int, default=0, help="outer generations (0 = smoke default)")
     ap.add_argument("--pop-size", type=int, default=12)
     ap.add_argument("--cppn-hidden", type=int, default=14)
+    ap.add_argument("--cppn-outputs", type=int, default=0,
+                    help="CPPN output channels (0 = auto: 4 for pure_attn "
+                         "(k/q/v/rest), 1 otherwise)")
     ap.add_argument("--grid-size", type=int, default=15)
     ap.add_argument("--phenotype", type=str, default="mixed",
-                    choices=["conv", "attn", "deltanet", "mixed", "gated"],
+                    choices=["conv", "attn", "deltanet", "mixed", "gated",
+                             "pure_attn"],
                     help="phenotype architecture the CPPN encodes; 'gated' = "
                          "parallel deltanet+attention+conv branches with a "
-                         "CPPN-encoded per-task architecture gate")
+                         "CPPN-encoded per-task architecture gate; "
+                         "'pure_attn' = plain attention stack with separate "
+                         "k/q/v projections, encoded by a 4-output CPPN "
+                         "(one channel each for k, q, v, and the rest)")
     ap.add_argument("--channels", type=int, default=8)
     ap.add_argument("--attn-dim", type=int, default=48)
     ap.add_argument("--attn-heads", type=int, default=4)
@@ -1415,9 +1577,10 @@ def main(argv: Optional[Sequence[str]] = None):
     ap.add_argument("--substrate-radius", type=float, default=0.25,
                     help="half-size of the per-task substrate shift window")
     ap.add_argument("--coord-schema", type=str, default="auto",
-                    choices=["auto", "layer", "flat"],
-                    help="coordinate layout: auto (layer-aware if >=4 layer "
-                         "types, else flat), layer, or flat")
+                    choices=["auto", "layer", "flat", "kqv"],
+                    help="coordinate layout: auto (pure_attn -> kqv; layer-aware "
+                         "if >=4 layer types, else flat), layer, flat, or kqv "
+                         "(k/q/v projection regions for pure_attn)")
     ap.add_argument("--sgd-lr", type=float, default=5e-2)
     ap.add_argument("--cppn-lr", type=float, default=5e-3)
     ap.add_argument("--seed", type=int, default=0)
@@ -1448,6 +1611,8 @@ def main(argv: Optional[Sequence[str]] = None):
     ap.add_argument("--device", type=str, default="auto")
     args = ap.parse_args(argv)
     dyn = Config().dynamic_substrate if args.dynamic_substrate is None else args.dynamic_substrate
+    cppn_outputs = (args.cppn_outputs if args.cppn_outputs > 0
+                    else (4 if args.phenotype == "pure_attn" else 1))
 
     if args.smoke:
         cfg = Config(grid_size=args.grid_size, max_demos=args.max_demos,
@@ -1457,6 +1622,7 @@ def main(argv: Optional[Sequence[str]] = None):
                      dynamic_substrate=dyn, substrate_dim=args.substrate_dim,
                      substrate_radius=args.substrate_radius,
                      coord_schema=args.coord_schema,
+                     cppn_num_outputs=cppn_outputs,
                      save_name=args.save_name)
         smoke(cfg)
         return
@@ -1470,6 +1636,7 @@ def main(argv: Optional[Sequence[str]] = None):
         sgd_lr=args.sgd_lr, cppn_lr=args.cppn_lr,
         n_eval=args.n_eval, eval_sgd_steps=args.eval_sgd_steps,
         pop_size=args.pop_size, cppn_num_hidden=args.cppn_hidden,
+        cppn_num_outputs=cppn_outputs,
         generations=args.generations, seed=args.seed, device=args.device,
         dynamic_substrate=dyn, substrate_dim=args.substrate_dim,
         substrate_radius=args.substrate_radius,
