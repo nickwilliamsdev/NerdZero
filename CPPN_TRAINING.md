@@ -233,6 +233,19 @@ finiteness, kqv regions, per-channel encode dispatch, per-channel meta-grad).
   amplified (longer run, bigger pop, or a per-cell / soft gate) — at the current
   budget the gate is effectively a noise channel. (3) multi-seed stability of
   the gated winner (only seed 0 has been run for it).
+* **pure_attn / kqv / 4-output CPPN (2026-11-14):** the plumbing works and is
+  unit-verified (`check_pure_attn.py`: finite forward, distinct k/q/v substrate
+  regions, exact per-channel encode dispatch, meta-grad reaches all 4 CPPN
+  output channels). But a **single attention layer at d=24** is a weaker
+  phenotype than the gated mix: 10-split generalisation mean 0.4426 (10 gens,
+  pop-8) / 0.4337 (30 gens, pop-8) vs gated 0.5789 and dn24 0.5515 on the
+  identical splits. The 30-gen run did NOT improve on 10 — the winner
+  plateaued in-sample at ~0.42 after gen ~19 — so the gap is a *phenotype
+  expressiveness ceiling* (attention alone, 1 layer), not a training-budget
+  problem. To beat the gated baseline the pure-attention branch likely needs
+  depth (≥2–3 layers) or a larger d, at the cost of more encoded params.
+  The kqv 4-output-CPPN mechanism itself is sound and reusable for any
+  phenotype where specific sub-matrices deserve dedicated generator channels.
 
 ---
 
