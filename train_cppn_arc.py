@@ -111,6 +111,7 @@ class Config:
     meta_loss: str = "delta"                 # "delta" (1st-order weight-delta) or "maml" (2nd-order FOMAML)
     meta_loss_weight: str = "mean"           # "mean" (per-coordinate mean) or "per_param" (equal weight per parameter tensor)
     gate_meta: str = "delta"                 # meta-signal for tiny selector tensors (gates): "delta" or "task" (post-adaptation task-loss gradient)
+    gate_task_scale: float = 0.5             # with gate_meta="task", blend factor s in (1-s)*delta + s*task for the gate. 1.0=full task signal (over-commits), 0.0=delta; damp to ~0.25-0.5 to keep branch choice from overfitting
 
     seed: int = 0
     device: str = "auto"
@@ -1158,6 +1159,12 @@ def evaluate_genome(genome, neat_cfg, pc: ParamCoords, sgd_ep: Episode,
         #
         # cfg.gate_meta == "task": swap the gate's delta signal for the
         # post-adaptation task-loss gradient (see below in the loop).
+        # cfg.gate_task_scale damps the swap: scale=1.0 is the full task
+        # signal, 0.0 is pure delta; in between the gate feels
+        #   (1-s) * delta_term + s * task_term
+        # Pure task (s=1) over-commits the gate to one branch per task and
+        # overfits the branch choice, so a damped blend is the default
+        # experiment.
         gate_idx = None
         for _n, name in enumerate(pc.names):
             if name == "gate":
@@ -1165,7 +1172,10 @@ def evaluate_genome(genome, neat_cfg, pc: ParamCoords, sgd_ep: Episode,
                 break
         gate_slice = (pc.offsets[gate_idx], int(np.prod(pc.shapes[gate_idx]))) \
             if gate_idx is not None else None
-        use_task_gate = cfg.gate_meta == "task" and gate_slice is not None
+        gate_scale = (float(cfg.gate_task_scale)
+                      if cfg.gate_meta == "task" and gate_slice is not None
+                      else 0.0)
+        use_task_gate = gate_scale > 0.0
         for _ in range(cfg.cppn_iters):
             substrate = _substrate_for(sgd_ep, pc, cfg)
             W_init = encode(cppn, pc, substrate).to(device)   # [N], grad -> cppn (CPU)
@@ -1176,31 +1186,51 @@ def evaluate_genome(genome, neat_cfg, pc: ParamCoords, sgd_ep: Episode,
                 wa_parts = [p.detach().reshape(-1) for p in phen.parameters()]
                 wi_parts = [W_init[o:o + int(np.prod(s))]
                             for o, s in zip(pc.offsets, pc.shapes)]
-                terms = [((w - i) ** 2).mean()
-                         for _i, (w, i) in enumerate(zip(wa_parts, wi_parts))
-                         if not (use_task_gate and _i == gate_idx)]
-                loss = torch.stack(terms).mean()
+                if use_task_gate:
+                    off, size = gate_slice
+                    gate_delta_mean = (((wi_parts[gate_idx] -
+                                         wa_parts[gate_idx]) ** 2).mean())
+                    epd = _ep_on_device(sgd_ep, device)
+                    g_gate = torch.autograd.grad(
+                        task_ce_loss(phen, epd), phen.gate)[0].detach()
+                    # gate term inside the per-tensor mean: its weight is
+                    # 1/T; the blend is (1-s)*delta + s*task, so multiply
+                    # the replacement by 1/T too.
+                    gate_term = ((1.0 - gate_scale) * gate_delta_mean
+                                 + gate_scale
+                                 * ((g_gate.reshape(-1)
+                                     * W_init[off:off + size]).sum()
+                                    / len(wa_parts)))
+                    terms = [((w - i) ** 2).mean()
+                             for _i, (w, i) in enumerate(zip(wa_parts, wi_parts))
+                             if _i != gate_idx]
+                    loss = torch.stack([*terms, gate_term]).mean()
+                else:
+                    loss = torch.stack([((w - i) ** 2).mean()
+                                        for w, i in zip(wa_parts, wi_parts)]).mean()
             else:
                 W_after = param_vector(phen, pc)       # on `device`, detached
                 delta = W_after - W_init
                 if use_task_gate:
-                    # Exclude the gate coords from the delta loss; their
-                    # meta-signal comes from the task loss instead.
+                    # Blend between the two endpoints:
+                    #   s=0 -> mean_all(delta^2)                        (pure delta)
+                    #   s=1 -> mean_{non-gate}(delta^2) + dot(g, W_gate) (pure task,
+                    #          as shipped in the first gate_meta=task run)
+                    #   loss = (1-s)*mean_all + s*(mean_non_gate + dot)
                     off, size = gate_slice
-                    delta = torch.cat([delta[:off], delta[off + size:]])
-                loss = (delta * delta).mean()
-            if use_task_gate:
-                # FOMAML dot trick (same as maml_meta_loss): at the adapted
-                # weights, g_gate = grad_gate L_task; then
-                #   d/d W_init[gate]  dot(g_gate, W_init[gate]) == g_gate
-                # so the CPPN feels "initialise the gate so the
-                # post-adaptation task loss is low", not "so the gate
-                # barely moves".
-                epd = _ep_on_device(sgd_ep, device)
-                g_gate = torch.autograd.grad(
-                    task_ce_loss(phen, epd), phen.gate)[0].detach()
-                off, size = gate_slice
-                loss = loss + (g_gate.reshape(-1) * W_init[off:off + size]).sum()
+                    epd = _ep_on_device(sgd_ep, device)
+                    g_gate = torch.autograd.grad(
+                        task_ce_loss(phen, epd), phen.gate)[0].detach()
+                    n_all = delta.numel()
+                    n_ng = n_all - size
+                    part_all = (delta * delta).sum() / n_all
+                    ng = torch.cat([delta[:off], delta[off + size:]])
+                    part_ng = (ng * ng).sum() / n_ng
+                    dot = (g_gate.reshape(-1) * W_init[off:off + size]).sum()
+                    loss = ((1.0 - gate_scale) * part_all
+                            + gate_scale * (part_ng + dot))
+                else:
+                    loss = (delta * delta).mean()
             cppn_opt.zero_grad()
             loss.backward()
             cppn_opt.step()
@@ -1410,6 +1440,11 @@ def main(argv: Optional[Sequence[str]] = None):
                     help="meta-signal for the gated phenotype's architecture gate: "
                          "delta (default) keeps it in the weight-delta loss; task "
                          "swaps it for the post-adaptation task-loss gradient")
+    ap.add_argument("--gate-task-scale", type=float, default=0.5,
+                    help="with --gate-meta task, blend factor s in (1-s)*delta + "
+                         "s*task for the gate (1.0 = full task signal, 0.0 = pure "
+                         "delta). Full task over-commits the branch choice; damp "
+                         "toward delta if that happens.")
     ap.add_argument("--device", type=str, default="auto")
     args = ap.parse_args(argv)
     dyn = Config().dynamic_substrate if args.dynamic_substrate is None else args.dynamic_substrate
@@ -1444,6 +1479,7 @@ def main(argv: Optional[Sequence[str]] = None):
         meta_loss=args.meta_loss,
         meta_loss_weight=args.meta_loss_weight,
         gate_meta=args.gate_meta,
+        gate_task_scale=args.gate_task_scale,
     )
     run(cfg)
 
