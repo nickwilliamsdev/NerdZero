@@ -23,7 +23,7 @@ feed_forward            = True
 # Activation function parameters
 activation_default      = relu
 activation_mutate_rate  = 0.0
-activation_options      = relu sigmoid tanh sin cos
+activation_options      = relu sigmoid tanh sin cos abs cube
 
 # Node response options
 aggregation_default     = sum
