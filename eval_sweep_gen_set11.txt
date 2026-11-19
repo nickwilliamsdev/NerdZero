@@ -1,0 +1,19 @@
+Common unseen 16-task set (seed 11): ['2c737e39', 'cd3c21df', 'aabf363d', '11e1fe23', '465b7d93', 'ff72ca3e', 'b2bc3ffd', '97999447', '31d5ba1a', 'f3e62deb', 'a5313dff', 'c59eb873', 'bc1d5164', 'd10ecb37', '447fd412', 'fe45cba4']
+
+ctrl     delta lr0.05 steps12 s0: mean=0.5714  per-task=[0.5167, 0.0, 0.7551, 0.9417, 0.47, 0.8611, 0.625, 0.7125, 0.5333, 0.92, 0.5156, 0.0, 0.5556, 0.25, 0.7976, 0.6875]
+  genome complexity: 49 nodes / 294 links
+lr10     delta lr0.10 steps12 s0: mean=0.5528  per-task=[0.8417, 0.0, 0.7551, 0.9417, 0.2, 0.8611, 0.7031, 0.8625, 0.2667, 0.89, 0.5156, 0.0, 0.4444, 0.25, 0.7976, 0.5156]
+  genome complexity: 50 nodes / 297 links
+steps24  delta lr0.10 steps24 s0: mean=0.5790  per-task=[0.5917, 0.0, 0.7551, 0.9417, 0.58, 0.8611, 0.625, 0.725, 0.5333, 0.86, 0.5156, 0.0, 0.5556, 0.25, 0.7976, 0.6719]
+  genome complexity: 52 nodes / 299 links
+ctrl     delta lr0.05 steps12 s1: mean=0.6146  per-task=[0.8333, 0.0, 0.7551, 0.9333, 0.75, 0.8611, 0.7031, 0.8625, 0.5333, 0.92, 0.5156, 0.0, 0.5556, 0.25, 0.7976, 0.5625]
+  genome complexity: 49 nodes / 293 links
+lr10     delta lr0.10 steps12 s1: mean=0.6216  per-task=[0.8417, 0.0, 0.7551, 0.9417, 0.74, 0.8611, 0.7031, 0.8625, 0.5333, 0.9, 0.5156, 0.0, 0.5556, 0.25, 0.7976, 0.6875]
+  genome complexity: 49 nodes / 293 links
+
+Ranking on common unseen set:
+  1. lr10     delta lr0.10 steps12 s1  0.6216
+  2. ctrl     delta lr0.05 steps12 s1  0.6146
+  3. steps24  delta lr0.10 steps24 s0  0.5790
+  4. ctrl     delta lr0.05 steps12 s0  0.5714
+  5. lr10     delta lr0.10 steps12 s0  0.5528
