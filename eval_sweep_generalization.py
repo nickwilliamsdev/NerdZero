@@ -21,6 +21,7 @@ SEED = 7
 S0_EVAL = {'007bbfb7', 'f5c89df1', '1b8318e3', 'a6953f00', '3aa6fb7a', '00dbd492'}
 S1_EVAL = {'8403a5d5', '94414823', 'bb43febb', 'f0f8a26d', '794b24be', '4c177718'}
 E12_EXTRA = {'575b1a71', '1b60fb0c', '494ef9d7', '941d9a10', '03560426', 'e9b4f6fc'}
+E12_S1 = {'3618c87e', '642248e4', 'aaef0977', 'a5f85a15', 'b7256dcd', '1c02dbbe'}
 
 RUNS = [
     # (label, pkl, native sgd_lr)
@@ -31,6 +32,8 @@ RUNS = [
     ("lr10     lr0.10 e12 s0", "sweep_lr10_e12_s0.pkl", 0.10),
     ("ctrl     lr0.05 e6  s1", "sweep_ctrl_delta48_s1.pkl", 0.05),
     ("lr10     lr0.10 e6  s1", "sweep_lr10_gated48_s1.pkl", 0.10),
+    ("ctrl     lr0.05 e12 s1", "sweep_ctrl_e12_s1.pkl", 0.05),
+    ("lr10     lr0.10 e12 s1", "sweep_lr10_e12_s1.pkl", 0.10),
 ]
 
 
@@ -45,7 +48,7 @@ def make_cfg(sgd_lr):
 
 def sample_unseen(store, cfg, n=8, seed=7):
     rng = random.Random(seed + 424242)
-    exclude = S0_EVAL | S1_EVAL | E12_EXTRA
+    exclude = S0_EVAL | S1_EVAL | E12_EXTRA | E12_S1
     idx = [i for i, t in enumerate(store.eligible) if str(getattr(t, "id", "")) not in exclude]
     rng.shuffle(idx)
     ids, eps = [], []
