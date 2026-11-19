@@ -20,14 +20,17 @@ GRID = 15
 SEED = 7
 S0_EVAL = {'007bbfb7', 'f5c89df1', '1b8318e3', 'a6953f00', '3aa6fb7a', '00dbd492'}
 S1_EVAL = {'8403a5d5', '94414823', 'bb43febb', 'f0f8a26d', '794b24be', '4c177718'}
+E12_EXTRA = {'575b1a71', '1b60fb0c', '494ef9d7', '941d9a10', '03560426', 'e9b4f6fc'}
 
 RUNS = [
     # (label, pkl, native sgd_lr)
-    ("ctrl     delta lr0.05 steps12 s0", "sweep_ctrl_delta48_e6.pkl", 0.05),
-    ("lr10     delta lr0.10 steps12 s0", "sweep_lr10_gated48_e8.pkl", 0.10),
-    ("steps24  delta lr0.10 steps24 s0", "sweep_steps24_lr10_e8.pkl", 0.10),
-    ("ctrl     delta lr0.05 steps12 s1", "sweep_ctrl_delta48_s1.pkl", 0.05),
-    ("lr10     delta lr0.10 steps12 s1", "sweep_lr10_gated48_s1.pkl", 0.10),
+    ("ctrl     lr0.05 e6  s0", "sweep_ctrl_delta48_e6.pkl", 0.05),
+    ("lr10     lr0.10 e6  s0", "sweep_lr10_gated48_e8.pkl", 0.10),
+    ("steps24  lr0.10 e6  s0", "sweep_steps24_lr10_e8.pkl", 0.10),
+    ("ctrl     lr0.05 e12 s0", "sweep_ctrl_e12_s0.pkl", 0.05),
+    ("lr10     lr0.10 e12 s0", "sweep_lr10_e12_s0.pkl", 0.10),
+    ("ctrl     lr0.05 e6  s1", "sweep_ctrl_delta48_s1.pkl", 0.05),
+    ("lr10     lr0.10 e6  s1", "sweep_lr10_gated48_s1.pkl", 0.10),
 ]
 
 
@@ -42,7 +45,7 @@ def make_cfg(sgd_lr):
 
 def sample_unseen(store, cfg, n=8, seed=7):
     rng = random.Random(seed + 424242)
-    exclude = S0_EVAL | S1_EVAL
+    exclude = S0_EVAL | S1_EVAL | E12_EXTRA
     idx = [i for i, t in enumerate(store.eligible) if str(getattr(t, "id", "")) not in exclude]
     rng.shuffle(idx)
     ids, eps = [], []
