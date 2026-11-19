@@ -1,0 +1,44 @@
+/home/nwilliamsdev/ai-dev/nerd_learner/nerd-muzero/train_cppn_arc.py:580: UserWarning: enable_nested_tensor is True, but self.use_nested_tensor is False because encoder_layer.norm_first was True
+  self.encoder = nn.TransformerEncoder(layer, num_layers=L)
+Common unseen 8-task set (seed 7): ['4c5c2cf0', 'e4941b18', '9dfd6313', 'd37a1ef5', 'bf32578f', 'f9012d9b', 'f28a3cbb', '2685904e']
+
+/home/nwilliamsdev/ai-dev/nerd_learner/nerd-muzero/train_cppn_arc.py:580: UserWarning: enable_nested_tensor is True, but self.use_nested_tensor is False because encoder_layer.norm_first was True
+  self.encoder = nn.TransformerEncoder(layer, num_layers=L)
+ctrl     lr0.05 e6  s0: mean=0.5165  per-task=[0.7704, 0.6531, 0.3333, 0.4773, 0.6944, 0.0, 0.5432, 0.66]
+  genome complexity: 49 nodes / 294 links
+lr10     lr0.10 e6  s0: mean=0.4195  per-task=[0.7551, 0.5102, 0.1111, 0.5303, 0.3889, 0.0, 0.5802, 0.48]
+  genome complexity: 50 nodes / 297 links
+steps24  lr0.10 e6  s0: mean=0.4528  per-task=[0.2041, 0.5714, 0.0, 0.8333, 0.8889, 0.0, 0.6543, 0.47]
+  genome complexity: 52 nodes / 299 links
+ctrl     lr0.05 e12 s0: mean=0.5358  per-task=[0.7704, 0.2449, 0.5556, 0.6136, 0.75, 0.0, 0.642, 0.71]
+  genome complexity: 51 nodes / 297 links
+lr10     lr0.10 e12 s0: mean=0.5037  per-task=[0.7704, 0.0612, 0.5556, 0.5303, 0.7778, 0.0, 0.6543, 0.68]
+  genome complexity: 51 nodes / 300 links
+ctrl     lr0.05 e6  s1: mean=0.5167  per-task=[0.7704, 0.2449, 0.5556, 0.5303, 0.7778, 0.0, 0.6543, 0.6]
+  genome complexity: 49 nodes / 293 links
+lr10     lr0.10 e6  s1: mean=0.5780  per-task=[0.7704, 0.6531, 0.5556, 0.5303, 0.75, 0.0, 0.6543, 0.71]
+  genome complexity: 49 nodes / 293 links
+ctrl     lr0.05 e12 s1: mean=0.5754  per-task=[0.75, 0.6531, 0.4444, 0.5833, 0.7778, 0.0, 0.6543, 0.74]
+  genome complexity: 51 nodes / 297 links
+lr10     lr0.10 e12 s1: mean=0.6871  per-task=[0.7704, 0.6531, 0.4444, 0.5303, 0.7222, 1.0, 0.6667, 0.71]
+  genome complexity: 50 nodes / 296 links
+lr10 e12 pop16 s0: mean=0.6308  per-task=[0.7704, 0.6531, 0.2222, 0.5606, 0.5556, 1.0, 0.6543, 0.63]
+  genome complexity: 49 nodes / 291 links
+lr10 e12 pop16 s1: mean=0.5608  per-task=[0.7704, 0.5306, 0.4444, 0.7803, 0.6667, 0.0, 0.6543, 0.64]
+  genome complexity: 50 nodes / 294 links
+gate s=0.25 pop16 s0: mean=0.5268  per-task=[0.6735, 0.449, 0.5556, 0.4545, 0.7778, 0.0, 0.6543, 0.65]
+  genome complexity: 50 nodes / 295 links
+
+Ranking on common unseen set:
+  1. lr10     lr0.10 e12 s1  0.6871
+  2. lr10 e12 pop16 s0  0.6308
+  3. lr10     lr0.10 e6  s1  0.5780
+  4. ctrl     lr0.05 e12 s1  0.5754
+  5. lr10 e12 pop16 s1  0.5608
+  6. ctrl     lr0.05 e12 s0  0.5358
+  7. gate s=0.25 pop16 s0  0.5268
+  8. ctrl     lr0.05 e6  s1  0.5167
+  9. ctrl     lr0.05 e6  s0  0.5165
+  10. lr10     lr0.10 e12 s0  0.5037
+  11. steps24  lr0.10 e6  s0  0.4528
+  12. lr10     lr0.10 e6  s0  0.4195
