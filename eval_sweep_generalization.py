@@ -36,6 +36,8 @@ RUNS = [
     ("lr10     lr0.10 e12 s1", "sweep_lr10_e12_s1.pkl", 0.10),
     ("lr10 e12 pop16 s0", "sweep_lr10_e12_pop16_s0.pkl", 0.10),
     ("lr10 e12 pop16 s1", "sweep_lr10_e12_pop16_s1.pkl", 0.10),
+    ("d64  attn-dim 64 s0", "sweep_gated_d64_s0.pkl", 0.10),
+    ("b4   4th-branch s0", "sweep_gated_b4_s0.pkl", 0.10),
 ]
 
 
