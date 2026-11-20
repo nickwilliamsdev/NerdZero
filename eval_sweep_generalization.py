@@ -39,11 +39,11 @@ RUNS = [
 ]
 
 
-def make_cfg(sgd_lr):
+def make_cfg(sgd_lr, gated_branches=3):
     return T.Config(
         phenotype='gated', channels=8, attn_dim=48, attn_heads=4, attn_layers=2,
         grid_size=GRID, pop_size=8, n_eval=6, seed=SEED,
-        fixed_eval=True, cppn_num_hidden=48,
+        fixed_eval=True, cppn_num_hidden=48, gated_branches=gated_branches,
         eval_sgd_steps=6, sgd_lr=sgd_lr,
     )
 

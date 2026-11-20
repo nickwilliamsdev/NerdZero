@@ -107,6 +107,7 @@ class Config:
     substrate_dim: int = 5           # CPPN coordinate dimensionality (5D: layer-aware)
     substrate_radius: float = 0.25   # half-size of the per-task substrate shift window
     coord_schema: str = "auto"     # "auto" (>=4 layer types -> layer, else flat), "layer" (5D), "flat"
+    gated_branches: int = 3         # 'gated' phenotype: 3 = dn/attn/conv (original); 4 adds a global "whole-grid" linear branch
     save_name: str = "cppn_arc_winner.pkl"   # where the winning genome is pickled
     fixed_eval: bool = False                 # sample eval tasks once, reuse every generation
     meta_loss: str = "delta"                 # "delta" (1st-order weight-delta) or "maml" (2nd-order FOMAML)
@@ -583,8 +584,29 @@ class ArcGatedPhenotype(nn.Module):
         self.conv_stem = nn.Conv2d(cfg.in_channels, cfg.channels, 3, padding=1)
         self.conv_mid = nn.Conv2d(cfg.channels, cfg.channels, 3, padding=1)
         self.conv_combine = nn.Conv2d(3 * cfg.channels, cfg.out_channels, 1)
+        # branch 4 (optional): global readout.  Pools the demo/query grids
+        # into one feature vector (mean over the variable-size demo batch),
+        # maps it to a 32-d "global statistics" feature, then a small shared
+        # head combines that feature with each cell's fixed position features
+        # (row/S, col/S, +1, +1) to predict that cell's colour.  ~22k params.
+        # Aims at counting / global-statistics / fill-the-rest tasks that the
+        # local (conv) and sequence branches handle awkwardly.
+        self.whole_feat = None
+        self.whole_head = None
+        if cfg.gated_branches >= 4:
+            flat = 3 * cfg.in_channels * cfg.grid_size * cfg.grid_size
+            S = cfg.grid_size
+            self.whole_feat = nn.Linear(flat, 32)
+            self.whole_head = nn.Linear(32 + 4, cfg.out_channels)
+            # row-major cell order: row value held for S cells (repeat_interleave),
+            # column value cycles through the full range each row (repeat)
+            rows = torch.linspace(0.0, 1.0, S).repeat_interleave(S)
+            cols = torch.linspace(0.0, 1.0, S).repeat(S)
+            pos = torch.stack([rows, cols, torch.ones(S * S), torch.ones(S * S)],
+                              dim=1)
+            self.register_buffer("_whole_pos", pos)
         # per-architecture gate (encoded by the CPPN like any other weight)
-        self.gate = nn.Parameter(torch.zeros(3))
+        self.gate = nn.Parameter(torch.zeros(cfg.gated_branches))
         self.out_channels = cfg.out_channels
         self.grid_size = cfg.grid_size
 
@@ -609,11 +631,32 @@ class ArcGatedPhenotype(nn.Module):
         x = torch.cat([enc(demo_in), enc(demo_out), enc(qi)], dim=1)   # [D,3k,S,S]
         return self.conv_combine(x).mean(dim=0, keepdim=True)          # [1,out,S,S]
 
+    def _whole_logits(self, ep: Episode) -> torch.Tensor:
+        assert self.whole_feat is not None and self.whole_head is not None
+        pos = self._whole_pos
+        assert pos is not None
+        # demo tensors are [D, C, S, S] with VARIABLE D per task, so pool the
+        # demo batch (mean over demos) before flattening -> fixed
+        # 3 * C * S * S vector regardless of how many demos the task has.
+        din = ep.demo_in.mean(dim=0)
+        dout = ep.demo_out.mean(dim=0)
+        flat = torch.cat([din.reshape(-1), dout.reshape(-1),
+                          ep.query_in.reshape(-1)], dim=0)
+        feat = torch.relu(self.whole_feat(flat))            # [32]
+        S = self.grid_size
+        x = torch.cat([feat.unsqueeze(0).expand(S * S, -1), pos],
+                      dim=1)                                # [S*S, 36]
+        logits = self.whole_head(x)                         # [S*S, out]
+        return logits.reshape(1, S, S, self.out_channels).permute(0, 3, 1, 2)
+
     def forward(self, ep: Episode) -> torch.Tensor:
         logit_dn, logit_attn = self._seq_logits(ep)
         logit_conv = self._conv_logits(ep)
-        g = torch.softmax(self.gate, dim=0)             # [3]
-        return g[0] * logit_dn + g[1] * logit_attn + g[2] * logit_conv
+        g = torch.softmax(self.gate, dim=0)
+        out = g[0] * logit_dn + g[1] * logit_attn + g[2] * logit_conv
+        if self.whole_head is not None:
+            out = out + g[3] * self._whole_logits(ep)
+        return out
 
 
 class ArcMixedPhenotype(nn.Module):
@@ -1608,6 +1651,10 @@ def main(argv: Optional[Sequence[str]] = None):
                          "s*task for the gate (1.0 = full task signal, 0.0 = pure "
                          "delta). Full task over-commits the branch choice; damp "
                          "toward delta if that happens.")
+    ap.add_argument("--gated-branches", type=int, default=3, choices=[3, 4],
+                    help="gated phenotype: 3 = memory/attention/conv (default, "
+                         "original); 4 adds a global whole-grid linear branch "
+                         "(counting/global-statistics aimed)")
     ap.add_argument("--device", type=str, default="auto")
     args = ap.parse_args(argv)
     dyn = Config().dynamic_substrate if args.dynamic_substrate is None else args.dynamic_substrate
@@ -1622,6 +1669,7 @@ def main(argv: Optional[Sequence[str]] = None):
                      dynamic_substrate=dyn, substrate_dim=args.substrate_dim,
                      substrate_radius=args.substrate_radius,
                      coord_schema=args.coord_schema,
+                     gated_branches=args.gated_branches,
                      cppn_num_outputs=cppn_outputs,
                      save_name=args.save_name)
         smoke(cfg)
@@ -1641,6 +1689,7 @@ def main(argv: Optional[Sequence[str]] = None):
         dynamic_substrate=dyn, substrate_dim=args.substrate_dim,
         substrate_radius=args.substrate_radius,
         coord_schema=args.coord_schema,
+        gated_branches=args.gated_branches,
         save_name=args.save_name,
         fixed_eval=args.fixed_eval,
         meta_loss=args.meta_loss,
