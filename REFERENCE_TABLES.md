@@ -151,7 +151,7 @@ training; "unseen set" = tasks never used in training (seed-13 set, 16 tasks).
 | `gated`, hidden 48, pop 8, seed 0 (baseline) | ~0.75 (at 6 eval steps) | **0.7956** recorded (300 steps, unclipped, lr 0.1) |
 | `gated`, d64 (bigger attention branch) | — | 0.7454 (300 steps) — worse than baseline |
 | `gated`, 4th branch (global readout) | — | 0.7237 (300 steps) — worse than baseline |
-| `pure_attn` (attention-only) | peak ~0.587 | 0.606 (300 steps) — clearly weaker |
+| `pure_attn` (attention-only) | peak ~0.587 | 0.6055 (300 steps) — clearly weaker |
 | `gated`, **hidden 96, pop 4, inner 24 steps, eval 300 steps, seed 0** (this session's run) | **0.9255** (peak 0.9364) | **0.7774** (300 steps, unclipped, lr 0.1) |
 
 Reading of the last row (full detail in `CPPN_TRAINING.md`):
