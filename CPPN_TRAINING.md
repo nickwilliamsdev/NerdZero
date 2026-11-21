@@ -249,6 +249,34 @@ finiteness, kqv regions, per-channel encode dispatch, per-channel meta-grad).
 
 ---
 
+## In-flight run (2026-11-21): gated96 / pop4 / e300
+
+Pickup after the 300-step yardstick settled the architecture (gated 3-branch +
+5D layer/dynamic substrate wins; see `eval_sweep_gen_set13_300steps.txt`).
+Taking the most promising combo and applying the requested levers, in one run
+(`launch_gated96_pop4_e300.sh`, log `run_gated96_pop4_e300_s0.log`,
+winner → `cppn_arc_gated96_pop4_e300.pkl`, 30 gens, seed 0):
+
+* population size 8 → **4**
+* genotype initial hidden nodes `cppn_num_hidden` 48 → **96**
+* phenotype inner grad steps `sgd_steps` 12 → **24**
+* eval budget `eval_sgd_steps` 6 → **300** (train the phenotype until it
+  "overfits" on each task; the established overfit yardstick)
+
+Everything else held at the baseline combo: gated, d48, ch8, S15, lr 0.05,
+delta meta-loss, fixed-eval, dynamic 5D layer substrate, radius 0.25.
+
+Cost: ~1150–1300 s/gen (300-step eval dominates) → 30 gens ≈ 10 h on the GB10.
+Early signal (gen 1/2): in-sample best 0.8968, mean 0.8140 / 0.8035, stdev
+0.07–0.11 — healthy selection spread, NOT frozen (contrast the old
+plain-attention NaN-freeze at the 0.578 background fraction).
+
+When done: score it with `eval_set13_300steps.py` (re-created, committed) —
+same unseen 16-task set seed 13, 300 in-context SGD steps per task, so it is
+directly comparable to the baseline `ctrl e6 s0` = **0.7956**.
+
+---
+
 ## File map
 
 | File | What |
@@ -259,6 +287,7 @@ finiteness, kqv regions, per-channel encode dispatch, per-channel meta-grad).
 | `eval_all_winners.py` | one protocol-consistent table across all recent winners (dims/sgd steps matched per genome). |
 | `eval_one_winner.py` | drop-in: eval a single genome under the established protocol. |
 | `eval_generalization.py` | 10 independent random 8-task splits — the trustworthy generalisation test. |
+| `eval_set13_300steps.py` | 300-step in-context cross-eval on the unseen 16-task set (seed 13) — the overfit yardstick; re-creates the baseline 0.7956 ranking. |
 | `eval_gateblend.py` | fixed-eval + 10-split for the damped gate-blend winner vs delta baseline vs dn24, with gate values. |
 | `check_gate_blend.py` | numerical unit check that `gate_task_scale` blends to the two endpoints. |
 | `cppn_arc_*.pkl` | saved winner genomes (one per run). |
