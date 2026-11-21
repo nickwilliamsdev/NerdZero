@@ -275,6 +275,25 @@ When done: score it with `eval_set13_300steps.py` (re-created, committed) —
 same unseen 16-task set seed 13, 300 in-context SGD steps per task, so it is
 directly comparable to the baseline `ctrl e6 s0` = **0.7956**.
 
+### Interim result (same session)
+
+* 30 gens finished in ~9.3 h (avg ~1100 s/gen). In-sample winner fitness
+  **0.9255** (peak 0.9364 gen 8); winner genome (97 nodes / 582 links) — the
+  bigger genotype is genuinely in use.
+* **Protocol drift discovered:** the recorded 0.7956 baseline was scored
+  2026-11-20 11:11, BEFORE commit 8012613 (11:37) added the grad-norm clip to
+  `sgd_adapt`. The only code diff between that scoring point and HEAD is clip
+  + NaN guard. So:
+  * clipped protocol (current code): baseline **0.6015** vs new genome
+    **0.7994** (+0.198, same 16 tasks) — new genome wins decisively.
+  * unclipped protocol (baseline's original): baseline re-scores **0.7492**
+    vs recorded 0.7956 (−0.046; 6/16 per-task values exact, rest slightly
+    lower) → run-to-run variance on CUDA exists at this magnitude. A
+    2nd baseline rescore + an unclipped score of the new genome are
+    (`diag_noclip_baseline_run2.txt`, `diag_noclip_gated96.txt`) to pin the
+    variance band and give a same-protocol head-to-head under the old
+    protocol.
+
 ---
 
 ## File map
