@@ -148,7 +148,7 @@ training; "unseen set" = tasks never used in training (seed-13 set, 16 tasks).
 
 | Run (phenotype / key knobs) | In-sample best (fitness) | Unseen set 13 |
 |---|---|---|
-| `gated`, hidden 48, pop 8, seed 0 (baseline) | ~0.75 (at 6 eval steps) | **0.7956** recorded (300 steps, unclipped, lr 0.1) |
+| `gated`, hidden 48, pop 8, seed 0 (baseline) | 0.7407 (in-sample best, 6 eval steps) | **0.7956** recorded (300 steps, unclipped, lr 0.1) |
 | `gated`, d64 (bigger attention branch) | — | 0.7454 (300 steps) — worse than baseline |
 | `gated`, 4th branch (global readout) | — | 0.7237 (300 steps) — worse than baseline |
 | `pure_attn` (attention-only) | peak ~0.587 | 0.6055 (300 steps) — clearly weaker |
