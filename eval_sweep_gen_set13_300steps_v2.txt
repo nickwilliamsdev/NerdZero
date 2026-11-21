@@ -1,0 +1,12 @@
+Common unseen 16-task set (seed 13, 300-step in-context SGD): ['99306f82', 'd13f3404', '9bebae7a', '14b8e18c', '28e73c20', 'f45f5ca7', '9f27f097', 'c8cbb738', '8e301a54', 'e633a9e5', 'e45ef808', 'cf5fd0ad', 'b942fd60', 'fcc82909', '27f8ce4f', '4e469f39']
+
+ctrl e6 s0 (base): mean=0.6015  per-task=[0.6089, 0.5278, 0.8462, 0.45, 0.3889, 0.94, 0.7153, 0.6667, 0.72, 0.16, 0.5, 0.4931, 0.6389, 0.84, 0.358, 0.77]
+  genome complexity: 49 nodes / 294 links
+  ctrl e6 s0 (base) done
+gated96 pop4 e300 s0: mean=0.7994  per-task=[0.7689, 0.4167, 0.8741, 0.8, 1.0, 0.92, 0.8264, 1.0, 0.95, 0.48, 0.8333, 0.5556, 0.7778, 0.98, 0.6173, 0.99]
+  genome complexity: 97 nodes / 582 links
+  gated96 pop4 e300 s0 done
+
+Ranking on common unseen set (300-step in-context SGD):
+  1. gated96 pop4 e300 s0  0.7994
+  2. ctrl e6 s0 (base)  0.6015
