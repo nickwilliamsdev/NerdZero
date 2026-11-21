@@ -288,11 +288,23 @@ directly comparable to the baseline `ctrl e6 s0` = **0.7956**.
     **0.7994** (+0.198, same 16 tasks) — new genome wins decisively.
   * unclipped protocol (baseline's original): baseline re-scores **0.7492**
     vs recorded 0.7956 (−0.046; 6/16 per-task values exact, rest slightly
-    lower) → run-to-run variance on CUDA exists at this magnitude. A
-    2nd baseline rescore + an unclipped score of the new genome are
-    (`diag_noclip_baseline_run2.txt`, `diag_noclip_gated96.txt`) to pin the
-    variance band and give a same-protocol head-to-head under the old
-    protocol.
+    lower). Two independent unclipped baseline rescoring runs agree to the
+    4th decimal → **CUDA run-to-run is NOT the cause**; the original ad-hoc
+    protocol differed from my re-creation in some other way. **Found it**
+    (`diag_protocol_scan.py`): the ad-hoc run used **sgd_lr 0.10, unclipped**
+    — 15/16 per-task values match the recorded vector exactly; the one
+    differing task (recorded 0.8056 vs reproduced 0.5278) accounts for the
+    whole 0.7956 vs 0.7782 gap (candidate non-determinism at the higher lr,
+    being re-confirmed).
+  * So the true head-to-heads (same 16 tasks, same protocol for both genomes):
+    * **original ad-hoc protocol (unclipped, lr 0.1)**: baseline 0.7782
+      (reproduced; recorded 0.7956) vs new genome → being scored
+      (`diag_noclip_gated96_lr01.txt`).
+    * unclipped, lr 0.05: baseline **0.7492** vs new genome **0.8280**
+      (+0.079) — new genome wins decisively.
+    * clipped (current code), lr 0.05: baseline **0.6015** vs new genome
+      **0.7994** (+0.198). The grad-norm clip hurts the old baseline far
+      more than the new one.
 
 ---
 

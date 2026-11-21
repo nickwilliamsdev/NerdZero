@@ -34,6 +34,6 @@ T.sgd_adapt = sgd_adapt_noclip
 
 import eval_set13_300steps as E
 
-E.RUNS = [("gated96 pop4 e300 s0 (UNCLIPPED)",
-          "cppn_arc_gated96_pop4_e300.pkl", 0.05)]
+E.RUNS = [("gated96 pop4 e300 s0 (unclipped lr0.1)",
+          "cppn_arc_gated96_pop4_e300.pkl", 0.10)]
 E.main()
