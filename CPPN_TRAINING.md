@@ -296,15 +296,27 @@ directly comparable to the baseline `ctrl e6 s0` = **0.7956**.
     differing task (recorded 0.8056 vs reproduced 0.5278) accounts for the
     whole 0.7956 vs 0.7782 gap (candidate non-determinism at the higher lr,
     being re-confirmed).
-  * So the true head-to-heads (same 16 tasks, same protocol for both genomes):
-    * **original ad-hoc protocol (unclipped, lr 0.1)**: baseline 0.7782
-      (reproduced; recorded 0.7956) vs new genome → being scored
-      (`diag_noclip_gated96_lr01.txt`).
+  * So the true head-to-heads (same 16 tasks, same protocol for both genomes;
+    values re-read from the eval output files, not from memory):
+    * **original ad-hoc protocol (unclipped, lr 0.1)**: baseline
+      **0.7782** (recorded 0.7956, one task differs) vs new genome
+      **0.7774** — **a wash, −0.0008**.
     * unclipped, lr 0.05: baseline **0.7492** vs new genome **0.8280**
       (+0.079) — new genome wins decisively.
     * clipped (current code), lr 0.05: baseline **0.6015** vs new genome
-      **0.7994** (+0.198). The grad-norm clip hurts the old baseline far
-      more than the new one.
+      **0.7994** (+0.198) — new genome wins decisively.
+  * **Verdict:** the levers (bigger genotype + smaller pop + longer overfit
+    training) did NOT beat the baseline under the protocol the baseline was
+    originally judged on — that number is a wash. What they DID buy is
+    robustness: the baseline's score swings −0.177 across protocol variants
+    (0.7782 / 0.7492 / 0.6015 for the three lr×clip combinations), while the
+    new genome swings only +0.051 and never drops below its reference score
+    (0.7774 / 0.8280 / 0.7994) — it is stable or better under every variant. The 300-step overfit training also moved
+    in-sample selection to the 0.92–0.94 band (vs ~0.75 peaks before), so
+    selection is now running on an overfit signal, which was the goal.
+  * Side finding: the clip's effect depends on lr — at lr 0.1 it slightly
+    HELPS the old baseline (0.7966 vs 0.7782) while at lr 0.05 it badly
+    HURTS it (0.6015 vs 0.7492). The clip is not uniformly good or bad.
 
 ---
 
