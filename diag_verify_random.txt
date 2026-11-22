@@ -1,0 +1,5 @@
+16 tasks: ['99306f82', 'd13f3404', '9bebae7a', '14b8e18c', '28e73c20', 'f45f5ca7', '9f27f097', 'c8cbb738', '8e301a54', 'e633a9e5', 'e45ef808', 'cf5fd0ad', 'b942fd60', 'fcc82909', '27f8ce4f', '4e469f39']
+
+all-background baseline (mean over 16 tasks): 0.7514
+
+random genome: 49 nodes / 293 links (cppn_num_hidden=48)

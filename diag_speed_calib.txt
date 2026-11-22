@@ -1,0 +1,17 @@
+Unseen 16-task set (seed 13), sgd_lr=0.05, clipped:
+tasks: ['99306f82', 'd13f3404', '9bebae7a', '14b8e18c', '28e73c20', 'f45f5ca7', '9f27f097', 'c8cbb738', '8e301a54', 'e633a9e5', 'e45ef808', 'cf5fd0ad', 'b942fd60', 'fcc82909', '27f8ce4f', '4e469f39']
+
+baseline49   0:0.0443  5:0.0405
+gated96      0:0.3590  5:0.3608
+Traceback (most recent call last):
+  File "<string>", line 4, in <module>
+  File "/home/nwilliamsdev/ai-dev/nerd_learner/nerd-muzero/diag_speed_vs_steps.py", line 96, in main
+    curves[label] = curve(genome, template_cfg, eps, pc, neat_cfg, device)
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/nwilliamsdev/ai-dev/nerd_learner/nerd-muzero/diag_speed_vs_steps.py", line 46, in curve
+    cppn = T.create_torch_cppn(
+           ^^^^^^^^^^^^^^^^^^^^
+  File "/home/nwilliamsdev/ai-dev/nerd_learner/nerd-muzero/PyTorch-NEAT/pytorch_neat/cppn.py", line 617, in create_torch_cppn
+    node_gene = genome.nodes[idx]
+                ~~~~~~~~~~~~^^^^^
+KeyError: 0

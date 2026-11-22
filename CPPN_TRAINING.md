@@ -320,6 +320,70 @@ directly comparable to the baseline `ctrl e6 s0` = **0.7956**.
 
 ---
 
+## Synthesis (2026-11-21, after the gated96 run + diagnostics)
+
+### What has been tried (whole line, condensed)
+
+| Axis | Tried | Outcome |
+|---|---|---|
+| Phenotype | conv, attn, deltanet, mixed, gated(3), gated(4), d64, pure_attn | gated(3) best; d64 wash; 4th branch worse; pure_attn weakest (even at 300 steps) |
+| Substrate layout | flat / layer / kqv, dynamic vs fixed | layer + dynamic (radius 0.25) best for gated |
+| Meta-loss | delta vs MAML (FOMAML) | delta wins at every budget tested so far |
+| Delta weighting | mean vs per_param | no clear gain |
+| Gate signal | delta vs task (blend 0.25/0.5) | negative or null; keep delta |
+| In-context knobs | lr (0.05/0.10), sgd steps (12/24), attn dim, pop (8/16), cppn hidden (14/48/96) | small or null moves |
+| Eval budget | 6 vs 300 steps | huge: raised scores ~+0.2 and "overturned the ceiling" |
+| **This session** | gated96 / pop4 / inner24 / eval300, 30 gens | in-sample 0.9255; unseen a wash at 300 steps vs baseline, but much more protocol-robust |
+
+### What the speed-vs-steps diagnostic reveals (the new finding)
+
+On the unseen 16-task set (seed 13), accuracy vs in-context steps
+(clipped SGD, lr 0.05; all-background baseline on these tasks = 0.7514):
+
+| provider | 0 steps | 5 | 10 | 20 | 50 |
+|---|---|---|---|---|---|
+| baseline49 (selected at 6 steps) | 0.0443 | 0.0405 | 0.0569 | 0.2002 | 0.3180 |
+| gated96 (selected at 300 steps) | 0.3590 | 0.3608 | 0.3692 | 0.3961 | 0.5129 |
+| random genome (49 nodes) | 0.3873 | 0.3873 | 0.3873 | 0.3887 | 0.3467 |
+
+Three things fall out (each verified against its source):
+
+1. **The random genome is a genuine, non-degenerate start** — 0.3873 at 0
+   steps is *below* the 0.7514 all-background baseline, and its flat
+   0/5/10-then-drop curve is random-noise behaviour, not a background
+   degenerate. So it is a valid control.
+2. **Short-budget selection is actively harmful.** The baseline49 genome —
+   selected on a 6-step fitness — generalizes *worse than random at every
+   step count* (0.044@0, 0.318@50 vs random 0.387@0, 0.347@50). Selecting
+   "weights barely move in 6 steps" selected a genome whose encoded init is
+   near-useless, and the phenotype has to claw its way out from below
+   background. This is the null result of the whole first half of the line
+   stated precisely: at a 6-step yardstick, selection has no real signal.
+3. **Long-budget selection is what works.** gated96 — selected at 300 steps
+   — beats random at *every* step count (0.359@0 vs 0.387 is within noise,
+   but +0.007@20, +0.166@50, and it was +0.198 at 300 vs baseline49 in the
+   clipped protocol). The CPPN encodes real "start close to a solution"
+   quality, and that quality transfers to shorter budgets. The earlier
+   "wash at 300 steps" was not evidence the genome does nothing; it is
+   evidence the yardstick was saturated while the genome's advantage is a
+   faster/better start.
+
+**Corrected decision (replacing the short-budget idea I first wrote):**
+Do NOT move the yardstick to a short budget — the diagnostic just showed
+short-budget selection is the harmful one. The real limit is the ~0.80
+ceiling at 300 steps, where ~5 tasks per genome are stuck at 0.42–0.62
+while the rest hit ~1.0. Two candidate causes for that ceiling:
+(a) the in-context **optimizer** (plain clipped SGD, lr 0.05) underfits the
+hard tasks; (b) the **phenotype** cannot represent them at d48.
+Cheap decisive test for (a): `diag_adam_ceiling.py` re-scores the same
+genomes at 300 steps with Adam vs SGD per task. If Adam lifts the stuck
+tasks, the move is to meta-select with Adam in-context adaptation (and the
+genomes keep their init quality). If not, the phenotype is the bottleneck
+and the move is back to architecture/capacity — but now judged at the
+budget that actually discriminates.
+
+---
+
 ## File map
 
 | File | What |
@@ -331,6 +395,7 @@ directly comparable to the baseline `ctrl e6 s0` = **0.7956**.
 | `eval_one_winner.py` | drop-in: eval a single genome under the established protocol. |
 | `eval_generalization.py` | 10 independent random 8-task splits — the trustworthy generalisation test. |
 | `eval_set13_300steps.py` | 300-step in-context cross-eval on the unseen 16-task set (seed 13) — the overfit yardstick; re-creates the baseline 0.7956 ranking. |
+| `diag_speed_vs_steps.py` | accuracy-vs-in-context-steps curve for several genomes (evolved vs random) on set 13 — the diagnostic that localises the CPPN's value to the low-step regime. |
 | `eval_gateblend.py` | fixed-eval + 10-split for the damped gate-blend winner vs delta baseline vs dn24, with gate values. |
 | `check_gate_blend.py` | numerical unit check that `gate_task_scale` blends to the two endpoints. |
 | `cppn_arc_*.pkl` | saved winner genomes (one per run). |
