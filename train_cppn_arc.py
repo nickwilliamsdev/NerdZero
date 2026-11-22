@@ -1220,15 +1220,19 @@ def sgd_adapt(phen: nn.Module, ep: Episode, steps: int, lr: float,
         pred = phen(epd)                             # [1, out_channels, S, S]
         loss = F.cross_entropy(pred, target)
         loss.backward()
-        # clip: some phenotypes (e.g. the plain-attention line) DIVERGE at the
-        # default lr — loss 6.7 -> 3.8e1 -> 1e5 -> 2e9 -> 7e22 -> NaN in 7 steps
-        # on a random-init genome. Unclipped, the delta meta-loss becomes NaN,
-        # the CPPN meta-optimizer NaNs its own weights, and EVERY genome then
-        # encodes "predict all background", freezing fitness at the background
-        # fraction for the whole run (observed: 30 gens at exactly 0.57814,
-        # per-task values == colour-0 fraction of each eval task). Clipping
-        # keeps the update bounded so the delta loss stays finite.
-        torch.nn.utils.clip_grad_norm_(phen.parameters(), 1.0)
+        # clip at 10 (NOT 1): the healthy gated mix trains with grad norms
+        # ~10-80, so clip 1.0 throttles it (12-step accuracy 0.24 vs 0.90
+        # unclipped, measured on the same genome/task). The plain-attention
+        # line DIVERGES unclipped (loss 6.8 -> 1e10 -> NaN by step 8, grad
+        # norm 260+ at step 4); clip 10 tames it (loss converges to 0.25,
+        # same genome/task) without touching the gated line, because the
+        # divergence's first runaway step already exceeds norm 10 while
+        # healthy training stays below it. This is what keeps the delta
+        # meta-loss finite so the CPPN meta-optimizer never NaNs its
+        # weights (which would make every genome encode "all-background"
+        # and freeze fitness at the background fraction — the 30-gen
+        # 0.57814 tie observed on the unfixed pure_attn run).
+        torch.nn.utils.clip_grad_norm_(phen.parameters(), 10.0)
         opt.step()
         last_loss = float(loss.detach().cpu())
     phen.eval()
