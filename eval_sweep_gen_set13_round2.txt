@@ -1,0 +1,28 @@
+/home/nwilliamsdev/ai-dev/nerd_learner/nerd-muzero/train_cppn_arc.py:581: UserWarning: enable_nested_tensor is True, but self.use_nested_tensor is False because encoder_layer.norm_first was True
+  self.encoder = nn.TransformerEncoder(layer, num_layers=L)
+/home/nwilliamsdev/ai-dev/nerd_learner/nerd-muzero/train_cppn_arc.py:581: UserWarning: enable_nested_tensor is True, but self.use_nested_tensor is False because encoder_layer.norm_first was True
+  self.encoder = nn.TransformerEncoder(layer, num_layers=L)
+deep3 s0               6 steps: mean=0.6195
+deep3 s0               300 steps: mean=0.8514
+lookup s0              6 steps: mean=0.4984
+lookup s0              300 steps: mean=0.8450
+Traceback (most recent call last):
+  File "<string>", line 34, in <module>
+  File "/home/nwilliamsdev/ai-dev/nerd_learner/nerd-muzero/train_cppn_arc.py", line 1220, in sgd_adapt
+    pred = phen(epd)                             # [1, out_channels, S, S]
+           ^^^^^^^^^
+  File "/home/nwilliamsdev/ai-dev/nerd_learner/nerd-muzero/.venv/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1778, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/nwilliamsdev/ai-dev/nerd_learner/nerd-muzero/.venv/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1789, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/nwilliamsdev/ai-dev/nerd_learner/nerd-muzero/train_cppn_arc.py", line 668, in forward
+    out = g[0] * logit_dn + g[1] * logit_attn + g[2] * logit_conv
+                                                ~^^^
+IndexError: index 2 is out of bounds for dimension 0 with size 2
+/home/nwilliamsdev/ai-dev/nerd_learner/nerd-muzero/train_cppn_arc.py:581: UserWarning: enable_nested_tensor is True, but self.use_nested_tensor is False because encoder_layer.norm_first was True
+  self.encoder = nn.TransformerEncoder(layer, num_layers=L)
+/home/nwilliamsdev/ai-dev/nerd_learner/nerd-muzero/train_cppn_arc.py:581: UserWarning: enable_nested_tensor is True, but self.use_nested_tensor is False because encoder_layer.norm_first was True
+  self.encoder = nn.TransformerEncoder(layer, num_layers=L)
+pop16 e12 s0 (best)  6 steps: mean=0.4381
