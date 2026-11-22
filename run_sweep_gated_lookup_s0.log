@@ -1,0 +1,820 @@
+Using device: cuda
+/home/nwilliamsdev/ai-dev/nerd_learner/nerd-muzero/train_cppn_arc.py:581: UserWarning: enable_nested_tensor is True, but self.use_nested_tensor is False because encoder_layer.norm_first was True
+  self.encoder = nn.TransformerEncoder(layer, num_layers=L)
+Phenotype: gated  |  params: 68125  (channels=8, attn_dim=48, S=15, out=10)
+Substrate: dim=5  schema=layer (auto, 6 layer types)  mode=dynamic (task stats)  radius=0.25
+Eligible ARC tasks: 599  |  pop=16  cppn_hidden=48  device=cuda
+Fixed eval set (12 tasks): ['007bbfb7', 'f5c89df1', '1b8318e3', 'a6953f00', '3aa6fb7a', '00dbd492', '575b1a71', '1b60fb0c', '494ef9d7', '941d9a10', '03560426', 'e9b4f6fc']
+
+ ****** Running generation 0 ****** 
+
+/home/nwilliamsdev/ai-dev/nerd_learner/nerd-muzero/train_cppn_arc.py:581: UserWarning: enable_nested_tensor is True, but self.use_nested_tensor is False because encoder_layer.norm_first was True
+  self.encoder = nn.TransformerEncoder(layer, num_layers=L)
+/home/nwilliamsdev/ai-dev/nerd_learner/nerd-muzero/train_cppn_arc.py:581: UserWarning: enable_nested_tensor is True, but self.use_nested_tensor is False because encoder_layer.norm_first was True
+  self.encoder = nn.TransformerEncoder(layer, num_layers=L)
+[gen 1] sgd_task=82819916 eval=['007bbfb7', 'f5c89df1', '1b8318e3', 'a6953f00', '3aa6fb7a', '00dbd492', '575b1a71', '1b60fb0c', '494ef9d7', '941d9a10', '03560426', 'e9b4f6fc'] best=0.6826 mean=0.3701 (526.0s)
+    tasks solved (acc>0.99): 0/16
+Population's average fitness: 0.37006 stdev: 0.17796
+Best fitness: 0.68259 - size: (49, 293) - species 1 - id 11
+Average adjusted fitness: 0.299
+Mean genetic distance 3.680, standard deviation 0.902
+Population of 16 members in 1 species (after reproduction):
+   ID   age  size   fitness   adj fit  stag
+  ====  ===  ====  =========  =======  ====
+     1    0    16      0.683    0.299     0
+Total extinctions: 0
+Generation time: 526.010 sec
+
+ ****** Running generation 1 ****** 
+
+[gen 2] sgd_task=fafffa47 eval=['007bbfb7', 'f5c89df1', '1b8318e3', 'a6953f00', '3aa6fb7a', '00dbd492', '575b1a71', '1b60fb0c', '494ef9d7', '941d9a10', '03560426', 'e9b4f6fc'] best=0.6801 mean=0.4926 (385.1s)
+    tasks solved (acc>0.99): 0/16
+Population's average fitness: 0.49260 stdev: 0.15430
+Best fitness: 0.68005 - size: (49, 293) - species 1 - id 11
+Average adjusted fitness: 0.409
+Mean genetic distance 2.364, standard deviation 1.824
+Population of 16 members in 1 species (after reproduction):
+   ID   age  size   fitness   adj fit  stag
+  ====  ===  ====  =========  =======  ====
+     1    1    16      0.680    0.409     1
+Total extinctions: 0
+Generation time: 385.083 sec (455.546 average)
+
+ ****** Running generation 2 ****** 
+
+[gen 3] sgd_task=ba26e723 eval=['007bbfb7', 'f5c89df1', '1b8318e3', 'a6953f00', '3aa6fb7a', '00dbd492', '575b1a71', '1b60fb0c', '494ef9d7', '941d9a10', '03560426', 'e9b4f6fc'] best=0.7060 mean=0.5874 (448.4s)
+    tasks solved (acc>0.99): 0/16
+Population's average fitness: 0.58743 stdev: 0.10933
+Best fitness: 0.70601 - size: (49, 289) - species 1 - id 41
+Average adjusted fitness: 0.298
+Mean genetic distance 2.843, standard deviation 1.679
+Population of 16 members in 1 species (after reproduction):
+   ID   age  size   fitness   adj fit  stag
+  ====  ===  ====  =========  =======  ====
+     1    2    16      0.706    0.298     0
+Total extinctions: 0
+Generation time: 448.425 sec (453.173 average)
+
+ ****** Running generation 3 ****** 
+
+[gen 4] sgd_task=8d5021e8 eval=['007bbfb7', 'f5c89df1', '1b8318e3', 'a6953f00', '3aa6fb7a', '00dbd492', '575b1a71', '1b60fb0c', '494ef9d7', '941d9a10', '03560426', 'e9b4f6fc'] best=0.7148 mean=0.6315 (495.8s)
+    tasks solved (acc>0.99): 0/16
+Population's average fitness: 0.63150 stdev: 0.13472
+Best fitness: 0.71476 - size: (49, 289) - species 1 - id 50
+Average adjusted fitness: 0.459
+Mean genetic distance 3.546, standard deviation 1.094
+Population of 16 members in 1 species (after reproduction):
+   ID   age  size   fitness   adj fit  stag
+  ====  ===  ====  =========  =======  ====
+     1    3    16      0.715    0.459     0
+Total extinctions: 0
+Generation time: 495.861 sec (463.845 average)
+
+ ****** Running generation 4 ****** 
+
+[gen 5] sgd_task=5e6bbc0b eval=['007bbfb7', 'f5c89df1', '1b8318e3', 'a6953f00', '3aa6fb7a', '00dbd492', '575b1a71', '1b60fb0c', '494ef9d7', '941d9a10', '03560426', 'e9b4f6fc'] best=0.7248 mean=0.5821 (395.0s)
+    tasks solved (acc>0.99): 0/16
+Population's average fitness: 0.58209 stdev: 0.17034
+Best fitness: 0.72483 - size: (51, 293) - species 1 - id 72
+Average adjusted fitness: 0.490
+Mean genetic distance 2.139, standard deviation 1.819
+Population of 16 members in 1 species (after reproduction):
+   ID   age  size   fitness   adj fit  stag
+  ====  ===  ====  =========  =======  ====
+     1    4    16      0.725    0.490     0
+Total extinctions: 0
+Generation time: 395.008 sec (450.077 average)
+
+ ****** Running generation 5 ****** 
+
+[gen 6] sgd_task=60d73be6 eval=['007bbfb7', 'f5c89df1', '1b8318e3', 'a6953f00', '3aa6fb7a', '00dbd492', '575b1a71', '1b60fb0c', '494ef9d7', '941d9a10', '03560426', 'e9b4f6fc'] best=0.7253 mean=0.5331 (459.2s)
+    tasks solved (acc>0.99): 0/16
+Population's average fitness: 0.53310 stdev: 0.15977
+Best fitness: 0.72532 - size: (51, 293) - species 1 - id 72
+Average adjusted fitness: 0.367
+Mean genetic distance 1.389, standard deviation 1.720
+Population of 16 members in 1 species (after reproduction):
+   ID   age  size   fitness   adj fit  stag
+  ====  ===  ====  =========  =======  ====
+     1    5    16      0.725    0.367     0
+Total extinctions: 0
+Generation time: 459.257 sec (451.607 average)
+
+ ****** Running generation 6 ****** 
+
+[gen 7] sgd_task=b7cb93ac eval=['007bbfb7', 'f5c89df1', '1b8318e3', 'a6953f00', '3aa6fb7a', '00dbd492', '575b1a71', '1b60fb0c', '494ef9d7', '941d9a10', '03560426', 'e9b4f6fc'] best=0.7253 mean=0.5922 (432.0s)
+    tasks solved (acc>0.99): 0/16
+Population's average fitness: 0.59217 stdev: 0.13523
+Best fitness: 0.72532 - size: (51, 293) - species 1 - id 72
+Average adjusted fitness: 0.289
+Mean genetic distance 1.405, standard deviation 1.713
+Population of 16 members in 1 species (after reproduction):
+   ID   age  size   fitness   adj fit  stag
+  ====  ===  ====  =========  =======  ====
+     1    6    16      0.725    0.289     1
+Total extinctions: 0
+Generation time: 431.983 sec (448.804 average)
+
+ ****** Running generation 7 ****** 
+
+[gen 8] sgd_task=0c9aba6e eval=['007bbfb7', 'f5c89df1', '1b8318e3', 'a6953f00', '3aa6fb7a', '00dbd492', '575b1a71', '1b60fb0c', '494ef9d7', '941d9a10', '03560426', 'e9b4f6fc'] best=0.7253 mean=0.6250 (421.4s)
+    tasks solved (acc>0.99): 0/16
+Population's average fitness: 0.62500 stdev: 0.13242
+Best fitness: 0.72532 - size: (51, 293) - species 1 - id 72
+Average adjusted fitness: 0.447
+Mean genetic distance 0.933, standard deviation 1.451
+Population of 16 members in 1 species (after reproduction):
+   ID   age  size   fitness   adj fit  stag
+  ====  ===  ====  =========  =======  ====
+     1    7    16      0.725    0.447     2
+Total extinctions: 0
+Generation time: 421.385 sec (445.376 average)
+
+ ****** Running generation 8 ****** 
+
+[gen 9] sgd_task=e45ef808 eval=['007bbfb7', 'f5c89df1', '1b8318e3', 'a6953f00', '3aa6fb7a', '00dbd492', '575b1a71', '1b60fb0c', '494ef9d7', '941d9a10', '03560426', 'e9b4f6fc'] best=0.7253 mean=0.5445 (434.5s)
+    tasks solved (acc>0.99): 0/16
+Population's average fitness: 0.54447 stdev: 0.16541
+Best fitness: 0.72532 - size: (51, 293) - species 1 - id 72
+Average adjusted fitness: 0.387
+Mean genetic distance 1.424, standard deviation 1.701
+Population of 16 members in 1 species (after reproduction):
+   ID   age  size   fitness   adj fit  stag
+  ====  ===  ====  =========  =======  ====
+     1    8    16      0.725    0.387     3
+Total extinctions: 0
+Generation time: 434.492 sec (444.167 average)
+
+ ****** Running generation 9 ****** 
+
+[gen 10] sgd_task=137eaa0f eval=['007bbfb7', 'f5c89df1', '1b8318e3', 'a6953f00', '3aa6fb7a', '00dbd492', '575b1a71', '1b60fb0c', '494ef9d7', '941d9a10', '03560426', 'e9b4f6fc'] best=0.7253 mean=0.6442 (431.3s)
+    tasks solved (acc>0.99): 0/16
+Population's average fitness: 0.64418 stdev: 0.12305
+Best fitness: 0.72532 - size: (51, 293) - species 1 - id 72
+Average adjusted fitness: 0.393
+Mean genetic distance 1.406, standard deviation 1.709
+Population of 16 members in 1 species (after reproduction):
+   ID   age  size   fitness   adj fit  stag
+  ====  ===  ====  =========  =======  ====
+     1    9    16      0.725    0.393     4
+Total extinctions: 0
+Generation time: 431.315 sec (442.882 average)
+
+ ****** Running generation 10 ****** 
+
+[gen 11] sgd_task=9b4c17c4 eval=['007bbfb7', 'f5c89df1', '1b8318e3', 'a6953f00', '3aa6fb7a', '00dbd492', '575b1a71', '1b60fb0c', '494ef9d7', '941d9a10', '03560426', 'e9b4f6fc'] best=0.7253 mean=0.6319 (671.0s)
+    tasks solved (acc>0.99): 0/16
+Population's average fitness: 0.63193 stdev: 0.06344
+Best fitness: 0.72532 - size: (51, 293) - species 1 - id 72
+Average adjusted fitness: 0.109
+Mean genetic distance 1.412, standard deviation 1.710
+Population of 16 members in 1 species (after reproduction):
+   ID   age  size   fitness   adj fit  stag
+  ====  ===  ====  =========  =======  ====
+     1   10    16      0.725    0.109     5
+Total extinctions: 0
+Generation time: 670.993 sec (457.380 average)
+
+ ****** Running generation 11 ****** 
+
+[gen 12] sgd_task=230f2e48 eval=['007bbfb7', 'f5c89df1', '1b8318e3', 'a6953f00', '3aa6fb7a', '00dbd492', '575b1a71', '1b60fb0c', '494ef9d7', '941d9a10', '03560426', 'e9b4f6fc'] best=0.7253 mean=0.5598 (533.1s)
+    tasks solved (acc>0.99): 0/16
+Population's average fitness: 0.55981 stdev: 0.18189
+Best fitness: 0.72532 - size: (51, 293) - species 1 - id 72
+Average adjusted fitness: 0.444
+Mean genetic distance 1.638, standard deviation 1.785
+Population of 16 members in 1 species (after reproduction):
+   ID   age  size   fitness   adj fit  stag
+  ====  ===  ====  =========  =======  ====
+     1   11    16      0.725    0.444     6
+Total extinctions: 0
+Generation time: 533.177 sec (472.189 average)
+
+ ****** Running generation 12 ****** 
+
+[gen 13] sgd_task=1c02dbbe eval=['007bbfb7', 'f5c89df1', '1b8318e3', 'a6953f00', '3aa6fb7a', '00dbd492', '575b1a71', '1b60fb0c', '494ef9d7', '941d9a10', '03560426', 'e9b4f6fc'] best=0.7253 mean=0.5616 (929.4s)
+    tasks solved (acc>0.99): 0/16
+Population's average fitness: 0.56158 stdev: 0.16848
+Best fitness: 0.72532 - size: (51, 293) - species 1 - id 72
+Average adjusted fitness: 0.544
+Mean genetic distance 0.955, standard deviation 1.439
+Population of 16 members in 1 species (after reproduction):
+   ID   age  size   fitness   adj fit  stag
+  ====  ===  ====  =========  =======  ====
+     1   12    16      0.725    0.544     7
+Total extinctions: 0
+Generation time: 929.420 sec (520.289 average)
+
+ ****** Running generation 13 ****** 
+
+[gen 14] sgd_task=82819916 eval=['007bbfb7', 'f5c89df1', '1b8318e3', 'a6953f00', '3aa6fb7a', '00dbd492', '575b1a71', '1b60fb0c', '494ef9d7', '941d9a10', '03560426', 'e9b4f6fc'] best=0.7253 mean=0.5877 (734.3s)
+    tasks solved (acc>0.99): 0/16
+Population's average fitness: 0.58774 stdev: 0.12621
+Best fitness: 0.72532 - size: (51, 293) - species 1 - id 72
+Average adjusted fitness: 0.364
+Mean genetic distance 1.467, standard deviation 1.670
+Population of 16 members in 1 species (after reproduction):
+   ID   age  size   fitness   adj fit  stag
+  ====  ===  ====  =========  =======  ====
+     1   13    16      0.725    0.364     8
+Total extinctions: 0
+Generation time: 734.310 sec (544.134 average)
+
+ ****** Running generation 14 ****** 
+
+[gen 15] sgd_task=9ddd00f0 eval=['007bbfb7', 'f5c89df1', '1b8318e3', 'a6953f00', '3aa6fb7a', '00dbd492', '575b1a71', '1b60fb0c', '494ef9d7', '941d9a10', '03560426', 'e9b4f6fc'] best=0.7253 mean=0.6081 (644.4s)
+    tasks solved (acc>0.99): 0/16
+Population's average fitness: 0.60807 stdev: 0.14626
+Best fitness: 0.72532 - size: (51, 293) - species 1 - id 72
+Average adjusted fitness: 0.388
+Mean genetic distance 2.102, standard deviation 1.847
+Population of 16 members in 1 species (after reproduction):
+   ID   age  size   fitness   adj fit  stag
+  ====  ===  ====  =========  =======  ====
+     1   14    16      0.725    0.388     9
+Total extinctions: 0
+Generation time: 644.437 sec (569.077 average)
+
+ ****** Running generation 15 ****** 
+
+[gen 16] sgd_task=e872b94a eval=['007bbfb7', 'f5c89df1', '1b8318e3', 'a6953f00', '3aa6fb7a', '00dbd492', '575b1a71', '1b60fb0c', '494ef9d7', '941d9a10', '03560426', 'e9b4f6fc'] best=0.7248 mean=0.5981 (633.8s)
+    tasks solved (acc>0.99): 0/16
+Population's average fitness: 0.59815 stdev: 0.09834
+Best fitness: 0.72483 - size: (51, 293) - species 1 - id 72
+Average adjusted fitness: 0.201
+Mean genetic distance 1.862, standard deviation 1.828
+Population of 16 members in 1 species (after reproduction):
+   ID   age  size   fitness   adj fit  stag
+  ====  ===  ====  =========  =======  ====
+     1   15    16      0.725    0.201    10
+Total extinctions: 0
+Generation time: 633.816 sec (586.533 average)
+
+ ****** Running generation 16 ****** 
+
+[gen 17] sgd_task=74dd1130 eval=['007bbfb7', 'f5c89df1', '1b8318e3', 'a6953f00', '3aa6fb7a', '00dbd492', '575b1a71', '1b60fb0c', '494ef9d7', '941d9a10', '03560426', 'e9b4f6fc'] best=0.7253 mean=0.5714 (572.2s)
+    tasks solved (acc>0.99): 0/16
+Population's average fitness: 0.57137 stdev: 0.14796
+Best fitness: 0.72532 - size: (51, 293) - species 1 - id 72
+Average adjusted fitness: 0.394
+Mean genetic distance 1.864, standard deviation 1.828
+Population of 16 members in 1 species (after reproduction):
+   ID   age  size   fitness   adj fit  stag
+  ====  ===  ====  =========  =======  ====
+     1   16    16      0.725    0.394    11
+Total extinctions: 0
+Generation time: 572.272 sec (600.562 average)
+
+ ****** Running generation 17 ****** 
+
+[gen 18] sgd_task=239be575 eval=['007bbfb7', 'f5c89df1', '1b8318e3', 'a6953f00', '3aa6fb7a', '00dbd492', '575b1a71', '1b60fb0c', '494ef9d7', '941d9a10', '03560426', 'e9b4f6fc'] best=0.7253 mean=0.5133 (597.8s)
+    tasks solved (acc>0.99): 0/16
+Population's average fitness: 0.51331 stdev: 0.18150
+Best fitness: 0.72532 - size: (51, 293) - species 1 - id 72
+Average adjusted fitness: 0.422
+Mean genetic distance 2.080, standard deviation 1.861
+Population of 16 members in 1 species (after reproduction):
+   ID   age  size   fitness   adj fit  stag
+  ====  ===  ====  =========  =======  ====
+     1   17    16      0.725    0.422    12
+Total extinctions: 0
+Generation time: 597.865 sec (618.210 average)
+
+ ****** Running generation 18 ****** 
+
+[gen 19] sgd_task=60b61512 eval=['007bbfb7', 'f5c89df1', '1b8318e3', 'a6953f00', '3aa6fb7a', '00dbd492', '575b1a71', '1b60fb0c', '494ef9d7', '941d9a10', '03560426', 'e9b4f6fc'] best=0.7253 mean=0.6070 (613.1s)
+    tasks solved (acc>0.99): 0/16
+Population's average fitness: 0.60695 stdev: 0.11866
+Best fitness: 0.72532 - size: (51, 293) - species 1 - id 72
+Average adjusted fitness: 0.357
+Mean genetic distance 2.315, standard deviation 1.840
+Population of 16 members in 1 species (after reproduction):
+   ID   age  size   fitness   adj fit  stag
+  ====  ===  ====  =========  =======  ====
+     1   18    16      0.725    0.357    13
+Total extinctions: 0
+Generation time: 613.145 sec (636.075 average)
+
+ ****** Running generation 19 ****** 
+
+[gen 20] sgd_task=5792cb4d eval=['007bbfb7', 'f5c89df1', '1b8318e3', 'a6953f00', '3aa6fb7a', '00dbd492', '575b1a71', '1b60fb0c', '494ef9d7', '941d9a10', '03560426', 'e9b4f6fc'] best=0.7253 mean=0.6287 (629.4s)
+    tasks solved (acc>0.99): 0/16
+Population's average fitness: 0.62866 stdev: 0.09505
+Best fitness: 0.72532 - size: (51, 293) - species 1 - id 72
+Average adjusted fitness: 0.293
+Mean genetic distance 2.084, standard deviation 1.867
+Population of 16 members in 1 species (after reproduction):
+   ID   age  size   fitness   adj fit  stag
+  ====  ===  ====  =========  =======  ====
+     1   19    16      0.725    0.293    14
+Total extinctions: 0
+Generation time: 629.408 sec (655.884 average)
+
+ ****** Running generation 20 ****** 
+
+[gen 21] sgd_task=b1fc8b8e eval=['007bbfb7', 'f5c89df1', '1b8318e3', 'a6953f00', '3aa6fb7a', '00dbd492', '575b1a71', '1b60fb0c', '494ef9d7', '941d9a10', '03560426', 'e9b4f6fc'] best=0.7253 mean=0.6199 (434.2s)
+    tasks solved (acc>0.99): 0/16
+Population's average fitness: 0.61995 stdev: 0.08136
+Best fitness: 0.72532 - size: (51, 293) - species 1 - id 72
+Average adjusted fitness: 0.141
+Mean genetic distance 2.099, standard deviation 1.856
+Population of 16 members in 1 species (after reproduction):
+   ID   age  size   fitness   adj fit  stag
+  ====  ===  ====  =========  =======  ====
+     1   20    16      0.725    0.141    15
+Total extinctions: 0
+Generation time: 434.213 sec (632.206 average)
+
+ ****** Running generation 21 ****** 
+
+[gen 22] sgd_task=ad38a9d0 eval=['007bbfb7', 'f5c89df1', '1b8318e3', 'a6953f00', '3aa6fb7a', '00dbd492', '575b1a71', '1b60fb0c', '494ef9d7', '941d9a10', '03560426', 'e9b4f6fc'] best=0.7253 mean=0.5475 (399.4s)
+    tasks solved (acc>0.99): 0/16
+Population's average fitness: 0.54754 stdev: 0.19737
+Best fitness: 0.72532 - size: (51, 293) - species 1 - id 72
+Average adjusted fitness: 0.461
+Mean genetic distance 2.327, standard deviation 1.834
+Population of 16 members in 1 species (after reproduction):
+   ID   age  size   fitness   adj fit  stag
+  ====  ===  ====  =========  =======  ====
+     1   21    16      0.725    0.461    16
+Total extinctions: 0
+Generation time: 399.431 sec (618.832 average)
+
+ ****** Running generation 22 ****** 
+
+[gen 23] sgd_task=8618d23e eval=['007bbfb7', 'f5c89df1', '1b8318e3', 'a6953f00', '3aa6fb7a', '00dbd492', '575b1a71', '1b60fb0c', '494ef9d7', '941d9a10', '03560426', 'e9b4f6fc'] best=0.7248 mean=0.5603 (377.9s)
+    tasks solved (acc>0.99): 0/16
+Population's average fitness: 0.56026 stdev: 0.16410
+Best fitness: 0.72483 - size: (51, 293) - species 1 - id 72
+Average adjusted fitness: 0.445
+Mean genetic distance 2.351, standard deviation 1.814
+Population of 16 members in 1 species (after reproduction):
+   ID   age  size   fitness   adj fit  stag
+  ====  ===  ====  =========  =======  ====
+     1   22    16      0.725    0.445    17
+Total extinctions: 0
+Generation time: 377.877 sec (563.677 average)
+
+ ****** Running generation 23 ****** 
+
+[gen 24] sgd_task=1acc24af eval=['007bbfb7', 'f5c89df1', '1b8318e3', 'a6953f00', '3aa6fb7a', '00dbd492', '575b1a71', '1b60fb0c', '494ef9d7', '941d9a10', '03560426', 'e9b4f6fc'] best=0.7253 mean=0.5661 (601.3s)
+    tasks solved (acc>0.99): 0/16
+Population's average fitness: 0.56610 stdev: 0.15764
+Best fitness: 0.72532 - size: (51, 293) - species 1 - id 72
+Average adjusted fitness: 0.351
+Mean genetic distance 0.733, standard deviation 1.222
+Population of 16 members in 1 species (after reproduction):
+   ID   age  size   fitness   adj fit  stag
+  ====  ===  ====  =========  =======  ====
+     1   23    16      0.725    0.351    18
+Total extinctions: 0
+Generation time: 601.293 sec (550.376 average)
+
+ ****** Running generation 24 ****** 
+
+[gen 25] sgd_task=fafffa47 eval=['007bbfb7', 'f5c89df1', '1b8318e3', 'a6953f00', '3aa6fb7a', '00dbd492', '575b1a71', '1b60fb0c', '494ef9d7', '941d9a10', '03560426', 'e9b4f6fc'] best=0.7253 mean=0.6349 (381.6s)
+    tasks solved (acc>0.99): 0/16
+Population's average fitness: 0.63494 stdev: 0.09006
+Best fitness: 0.72532 - size: (51, 293) - species 1 - id 72
+Average adjusted fitness: 0.227
+Mean genetic distance 0.303, standard deviation 0.084
+Population of 16 members in 1 species (after reproduction):
+   ID   age  size   fitness   adj fit  stag
+  ====  ===  ====  =========  =======  ====
+     1   24    16      0.725    0.227    19
+Total extinctions: 0
+Generation time: 381.680 sec (524.100 average)
+
+ ****** Running generation 25 ****** 
+
+[gen 26] sgd_task=846bdb03 eval=['007bbfb7', 'f5c89df1', '1b8318e3', 'a6953f00', '3aa6fb7a', '00dbd492', '575b1a71', '1b60fb0c', '494ef9d7', '941d9a10', '03560426', 'e9b4f6fc'] best=0.7253 mean=0.6437 (540.6s)
+    tasks solved (acc>0.99): 0/16
+Population's average fitness: 0.64370 stdev: 0.07787
+Best fitness: 0.72532 - size: (51, 293) - species 1 - id 72
+Average adjusted fitness: 0.191
+Mean genetic distance 0.271, standard deviation 0.090
+Population of 16 members in 1 species (after reproduction):
+   ID   age  size   fitness   adj fit  stag
+  ====  ===  ====  =========  =======  ====
+     1   25    16      0.725    0.191    20
+Total extinctions: 0
+Generation time: 540.620 sec (514.780 average)
+
+ ****** Running generation 26 ****** 
+
+[gen 27] sgd_task=d687bc17 eval=['007bbfb7', 'f5c89df1', '1b8318e3', 'a6953f00', '3aa6fb7a', '00dbd492', '575b1a71', '1b60fb0c', '494ef9d7', '941d9a10', '03560426', 'e9b4f6fc'] best=0.7253 mean=0.6087 (588.0s)
+    tasks solved (acc>0.99): 0/16
+Population's average fitness: 0.60866 stdev: 0.13166
+Best fitness: 0.72532 - size: (51, 293) - species 1 - id 72
+Average adjusted fitness: 0.350
+Mean genetic distance 0.299, standard deviation 0.096
+Population of 16 members in 1 species (after reproduction):
+   ID   age  size   fitness   adj fit  stag
+  ====  ===  ====  =========  =======  ====
+     1   26    16      0.725    0.350    21
+Total extinctions: 0
+Generation time: 588.023 sec (516.356 average)
+
+ ****** Running generation 27 ****** 
+
+[gen 28] sgd_task=12422b43 eval=['007bbfb7', 'f5c89df1', '1b8318e3', 'a6953f00', '3aa6fb7a', '00dbd492', '575b1a71', '1b60fb0c', '494ef9d7', '941d9a10', '03560426', 'e9b4f6fc'] best=0.7253 mean=0.6203 (599.2s)
+    tasks solved (acc>0.99): 0/16
+Population's average fitness: 0.62034 stdev: 0.11385
+Best fitness: 0.72532 - size: (51, 293) - species 1 - id 72
+Average adjusted fitness: 0.274
+Mean genetic distance 0.415, standard deviation 0.093
+Population of 16 members in 1 species (after reproduction):
+   ID   age  size   fitness   adj fit  stag
+  ====  ===  ====  =========  =======  ====
+     1   27    16      0.725    0.274    22
+Total extinctions: 0
+Generation time: 599.275 sec (516.497 average)
+
+ ****** Running generation 28 ****** 
+
+[gen 29] sgd_task=e5790162 eval=['007bbfb7', 'f5c89df1', '1b8318e3', 'a6953f00', '3aa6fb7a', '00dbd492', '575b1a71', '1b60fb0c', '494ef9d7', '941d9a10', '03560426', 'e9b4f6fc'] best=0.7253 mean=0.6781 (402.4s)
+    tasks solved (acc>0.99): 0/16
+Population's average fitness: 0.67813 stdev: 0.03699
+Best fitness: 0.72532 - size: (51, 293) - species 1 - id 72
+Average adjusted fitness: 0.100
+Mean genetic distance 0.375, standard deviation 0.138
+Population of 16 members in 1 species (after reproduction):
+   ID   age  size   fitness   adj fit  stag
+  ====  ===  ====  =========  =======  ====
+     1   28    16      0.725    0.100    23
+Total extinctions: 0
+Generation time: 402.407 sec (495.423 average)
+
+ ****** Running generation 29 ****** 
+
+[gen 30] sgd_task=7b7f7511 eval=['007bbfb7', 'f5c89df1', '1b8318e3', 'a6953f00', '3aa6fb7a', '00dbd492', '575b1a71', '1b60fb0c', '494ef9d7', '941d9a10', '03560426', 'e9b4f6fc'] best=0.7253 mean=0.6337 (263.4s)
+    tasks solved (acc>0.99): 0/16
+Population's average fitness: 0.63368 stdev: 0.09087
+Best fitness: 0.72532 - size: (51, 293) - species 1 - id 72
+Average adjusted fitness: 0.189
+Mean genetic distance 0.376, standard deviation 0.124
+Population of 16 members in 1 species (after reproduction):
+   ID   age  size   fitness   adj fit  stag
+  ====  ===  ====  =========  =======  ====
+     1   29    16      0.725    0.189    24
+Total extinctions: 0
+Generation time: 263.410 sec (458.823 average)
+
+Best individual in generation 29 meets fitness threshold - complexity: (51, 293)
+
+=== Done ===
+Winner fitness: 0.7253232896327972
+Winner genome:
+Key: 72
+Fitness: 0.7253232896327972
+Nodes:
+	0 DefaultNodeGene(key=0, bias=-1.292764069718514, response=1.0, activation=tanh, aggregation=sum, time_constant=1.0)
+	481 DefaultNodeGene(key=481, bias=-0.4735984113566418, response=1.0, activation=tanh, aggregation=sum, time_constant=1.0)
+	482 DefaultNodeGene(key=482, bias=-0.5985042782271981, response=1.0, activation=tanh, aggregation=sum, time_constant=1.0)
+	483 DefaultNodeGene(key=483, bias=0.197504015114644, response=1.0, activation=tanh, aggregation=sum, time_constant=1.0)
+	484 DefaultNodeGene(key=484, bias=0.5118763601952324, response=1.0, activation=tanh, aggregation=sum, time_constant=1.0)
+	485 DefaultNodeGene(key=485, bias=0.037569921106954535, response=1.0, activation=tanh, aggregation=sum, time_constant=1.0)
+	486 DefaultNodeGene(key=486, bias=0.03641377924426765, response=1.0, activation=tanh, aggregation=sum, time_constant=1.0)
+	487 DefaultNodeGene(key=487, bias=-0.56941819407653, response=1.0, activation=tanh, aggregation=sum, time_constant=1.0)
+	488 DefaultNodeGene(key=488, bias=0.13800091787126484, response=1.0, activation=tanh, aggregation=sum, time_constant=1.0)
+	489 DefaultNodeGene(key=489, bias=-1.1917275188360277, response=1.0, activation=tanh, aggregation=sum, time_constant=1.0)
+	490 DefaultNodeGene(key=490, bias=-0.059913564297480404, response=1.0, activation=tanh, aggregation=sum, time_constant=1.0)
+	491 DefaultNodeGene(key=491, bias=0.09998174601613002, response=1.0, activation=identity, aggregation=sum, time_constant=1.0)
+	492 DefaultNodeGene(key=492, bias=-0.25299180971399904, response=1.0, activation=tanh, aggregation=sum, time_constant=1.0)
+	493 DefaultNodeGene(key=493, bias=-2.4601951361016074, response=1.0, activation=tanh, aggregation=sum, time_constant=1.0)
+	494 DefaultNodeGene(key=494, bias=-1.1970036838720852, response=1.0, activation=tanh, aggregation=sum, time_constant=1.0)
+	495 DefaultNodeGene(key=495, bias=-1.0754749727405502, response=1.0, activation=identity, aggregation=sum, time_constant=1.0)
+	496 DefaultNodeGene(key=496, bias=0.21242337694012817, response=1.0, activation=tanh, aggregation=sum, time_constant=1.0)
+	497 DefaultNodeGene(key=497, bias=-1.0600994627098719, response=1.0, activation=tanh, aggregation=sum, time_constant=1.0)
+	498 DefaultNodeGene(key=498, bias=-0.29656656501765966, response=1.0, activation=sigmoid, aggregation=sum, time_constant=1.0)
+	499 DefaultNodeGene(key=499, bias=0.21929977095167302, response=1.0, activation=tanh, aggregation=sum, time_constant=1.0)
+	500 DefaultNodeGene(key=500, bias=-1.7931684288662502, response=1.0, activation=tanh, aggregation=sum, time_constant=1.0)
+	501 DefaultNodeGene(key=501, bias=1.2724320861584708, response=1.0, activation=tanh, aggregation=sum, time_constant=1.0)
+	502 DefaultNodeGene(key=502, bias=1.0898390044517556, response=1.0, activation=tanh, aggregation=sum, time_constant=1.0)
+	503 DefaultNodeGene(key=503, bias=0.6035835664506666, response=1.0, activation=tanh, aggregation=sum, time_constant=1.0)
+	504 DefaultNodeGene(key=504, bias=0.5029314405036529, response=1.0, activation=tanh, aggregation=sum, time_constant=1.0)
+	505 DefaultNodeGene(key=505, bias=-0.1910318456929043, response=1.0, activation=tanh, aggregation=sum, time_constant=1.0)
+	506 DefaultNodeGene(key=506, bias=0.5002679726408807, response=1.0, activation=sigmoid, aggregation=sum, time_constant=1.0)
+	507 DefaultNodeGene(key=507, bias=-0.13831496813677113, response=1.0, activation=tanh, aggregation=sum, time_constant=1.0)
+	508 DefaultNodeGene(key=508, bias=0.3958632284137671, response=1.0, activation=tanh, aggregation=sum, time_constant=1.0)
+	509 DefaultNodeGene(key=509, bias=-0.16126012771201698, response=1.0, activation=tanh, aggregation=sum, time_constant=1.0)
+	510 DefaultNodeGene(key=510, bias=0.6540328710957579, response=1.0, activation=tanh, aggregation=sum, time_constant=1.0)
+	511 DefaultNodeGene(key=511, bias=-2.22482551121226, response=1.0, activation=tanh, aggregation=sum, time_constant=1.0)
+	512 DefaultNodeGene(key=512, bias=0.4243671788769468, response=1.0, activation=sigmoid, aggregation=sum, time_constant=1.0)
+	513 DefaultNodeGene(key=513, bias=1.0593427115403011, response=1.0, activation=tanh, aggregation=sum, time_constant=1.0)
+	514 DefaultNodeGene(key=514, bias=0.6308285375359263, response=1.0, activation=tanh, aggregation=sum, time_constant=1.0)
+	515 DefaultNodeGene(key=515, bias=-1.5113604914261076, response=1.0, activation=tanh, aggregation=sum, time_constant=1.0)
+	516 DefaultNodeGene(key=516, bias=-0.48482258159802605, response=1.0, activation=tanh, aggregation=sum, time_constant=1.0)
+	517 DefaultNodeGene(key=517, bias=1.1711356109856739, response=1.0, activation=tanh, aggregation=sum, time_constant=1.0)
+	518 DefaultNodeGene(key=518, bias=-0.8828717576267016, response=1.0, activation=tanh, aggregation=sum, time_constant=1.0)
+	519 DefaultNodeGene(key=519, bias=0.31313598590076896, response=1.0, activation=tanh, aggregation=sum, time_constant=1.0)
+	520 DefaultNodeGene(key=520, bias=-1.0045913272686304, response=1.0, activation=tanh, aggregation=sum, time_constant=1.0)
+	521 DefaultNodeGene(key=521, bias=-0.15554237753143407, response=1.0, activation=tanh, aggregation=sum, time_constant=1.0)
+	522 DefaultNodeGene(key=522, bias=-0.8363891634439262, response=1.0, activation=tanh, aggregation=sum, time_constant=1.0)
+	523 DefaultNodeGene(key=523, bias=0.4022944670199255, response=1.0, activation=tanh, aggregation=sum, time_constant=1.0)
+	524 DefaultNodeGene(key=524, bias=-0.5624118412268535, response=1.0, activation=tanh, aggregation=sum, time_constant=1.0)
+	525 DefaultNodeGene(key=525, bias=-0.24850929343588002, response=1.0, activation=tanh, aggregation=sum, time_constant=1.0)
+	526 DefaultNodeGene(key=526, bias=-0.34746068462391855, response=1.0, activation=tanh, aggregation=sum, time_constant=1.0)
+	527 DefaultNodeGene(key=527, bias=-0.20307313309279226, response=1.0, activation=tanh, aggregation=sum, time_constant=1.0)
+	528 DefaultNodeGene(key=528, bias=-0.6756878590253782, response=1.0, activation=tanh, aggregation=sum, time_constant=1.0)
+	778 DefaultNodeGene(key=778, bias=-1.5262745172542562, response=1.0, activation=tanh, aggregation=sum, time_constant=1.0)
+	789 DefaultNodeGene(key=789, bias=1.115229920319672, response=1.0, activation=tanh, aggregation=sum, time_constant=1.0)
+Connections:
+	DefaultConnectionGene(key=(-5, 0), innovation=293, weight=-0.5016985960453918, enabled=True)
+	DefaultConnectionGene(key=(-5, 481), innovation=3078, weight=-1.870976781420116, enabled=True)
+	DefaultConnectionGene(key=(-5, 482), innovation=3079, weight=-0.45439278987097476, enabled=True)
+	DefaultConnectionGene(key=(-5, 483), innovation=3080, weight=-0.5121367073984568, enabled=True)
+	DefaultConnectionGene(key=(-5, 484), innovation=3081, weight=0.3369895407599073, enabled=True)
+	DefaultConnectionGene(key=(-5, 485), innovation=3082, weight=1.6287304242661214, enabled=True)
+	DefaultConnectionGene(key=(-5, 486), innovation=3083, weight=0.9722328441300667, enabled=True)
+	DefaultConnectionGene(key=(-5, 487), innovation=3084, weight=-0.1953720962783596, enabled=True)
+	DefaultConnectionGene(key=(-5, 488), innovation=3085, weight=-0.12818680136058364, enabled=True)
+	DefaultConnectionGene(key=(-5, 489), innovation=3086, weight=0.2460939122536203, enabled=True)
+	DefaultConnectionGene(key=(-5, 490), innovation=3087, weight=-0.4501447476042101, enabled=True)
+	DefaultConnectionGene(key=(-5, 491), innovation=3088, weight=-0.12645021361662742, enabled=True)
+	DefaultConnectionGene(key=(-5, 492), innovation=3089, weight=-0.505857945551745, enabled=True)
+	DefaultConnectionGene(key=(-5, 493), innovation=3090, weight=0.046499030483872106, enabled=True)
+	DefaultConnectionGene(key=(-5, 494), innovation=3091, weight=-0.1458533696087208, enabled=True)
+	DefaultConnectionGene(key=(-5, 495), innovation=3092, weight=0.2971834022518977, enabled=True)
+	DefaultConnectionGene(key=(-5, 496), innovation=3093, weight=-1.2473249452051562, enabled=True)
+	DefaultConnectionGene(key=(-5, 497), innovation=3094, weight=0.6214780592196986, enabled=True)
+	DefaultConnectionGene(key=(-5, 498), innovation=3095, weight=0.7307983583598044, enabled=True)
+	DefaultConnectionGene(key=(-5, 499), innovation=3096, weight=-0.18805319584981295, enabled=True)
+	DefaultConnectionGene(key=(-5, 500), innovation=3097, weight=0.21106417093958943, enabled=True)
+	DefaultConnectionGene(key=(-5, 501), innovation=3098, weight=0.6138765025731936, enabled=True)
+	DefaultConnectionGene(key=(-5, 502), innovation=3099, weight=0.6253451113968136, enabled=True)
+	DefaultConnectionGene(key=(-5, 503), innovation=3100, weight=0.3824041458628293, enabled=True)
+	DefaultConnectionGene(key=(-5, 504), innovation=3101, weight=-1.1561500076587363, enabled=True)
+	DefaultConnectionGene(key=(-5, 505), innovation=3102, weight=1.124014274565882, enabled=True)
+	DefaultConnectionGene(key=(-5, 506), innovation=3103, weight=-0.39841928322984377, enabled=True)
+	DefaultConnectionGene(key=(-5, 507), innovation=3104, weight=0.1432777310609187, enabled=True)
+	DefaultConnectionGene(key=(-5, 508), innovation=3105, weight=1.2947192766765283, enabled=True)
+	DefaultConnectionGene(key=(-5, 509), innovation=3106, weight=0.12100548747052581, enabled=True)
+	DefaultConnectionGene(key=(-5, 510), innovation=3107, weight=0.2508781915323305, enabled=True)
+	DefaultConnectionGene(key=(-5, 511), innovation=3108, weight=0.07934478987220264, enabled=True)
+	DefaultConnectionGene(key=(-5, 512), innovation=3109, weight=0.09868341978388434, enabled=True)
+	DefaultConnectionGene(key=(-5, 513), innovation=3110, weight=0.7558966067486984, enabled=True)
+	DefaultConnectionGene(key=(-5, 514), innovation=3111, weight=0.25493449792203515, enabled=True)
+	DefaultConnectionGene(key=(-5, 515), innovation=3112, weight=0.29997318268010575, enabled=True)
+	DefaultConnectionGene(key=(-5, 516), innovation=3113, weight=1.4045952490559388, enabled=True)
+	DefaultConnectionGene(key=(-5, 517), innovation=3114, weight=1.1398497296859451, enabled=True)
+	DefaultConnectionGene(key=(-5, 518), innovation=3115, weight=-0.7103039490979656, enabled=True)
+	DefaultConnectionGene(key=(-5, 519), innovation=3116, weight=-0.25051868596921995, enabled=True)
+	DefaultConnectionGene(key=(-5, 520), innovation=3117, weight=0.10094561894993377, enabled=True)
+	DefaultConnectionGene(key=(-5, 521), innovation=3118, weight=-0.024015386280717366, enabled=True)
+	DefaultConnectionGene(key=(-5, 522), innovation=3119, weight=0.2762148868900363, enabled=True)
+	DefaultConnectionGene(key=(-5, 523), innovation=3120, weight=-0.42613566066799435, enabled=True)
+	DefaultConnectionGene(key=(-5, 524), innovation=3121, weight=0.8005172945125545, enabled=True)
+	DefaultConnectionGene(key=(-5, 525), innovation=3122, weight=-0.37181431062964276, enabled=True)
+	DefaultConnectionGene(key=(-5, 526), innovation=3123, weight=-1.595963343291366, enabled=True)
+	DefaultConnectionGene(key=(-5, 527), innovation=3124, weight=-0.9775246379216114, enabled=True)
+	DefaultConnectionGene(key=(-5, 528), innovation=3125, weight=-0.08881434670183819, enabled=True)
+	DefaultConnectionGene(key=(-4, 0), innovation=292, weight=-0.5298625227852928, enabled=True)
+	DefaultConnectionGene(key=(-4, 481), innovation=3030, weight=0.36975902281960515, enabled=True)
+	DefaultConnectionGene(key=(-4, 482), innovation=3031, weight=0.14085118420926007, enabled=True)
+	DefaultConnectionGene(key=(-4, 483), innovation=3032, weight=0.14603488462639436, enabled=True)
+	DefaultConnectionGene(key=(-4, 484), innovation=3033, weight=0.11612851492724963, enabled=True)
+	DefaultConnectionGene(key=(-4, 485), innovation=3034, weight=-0.024133742517946227, enabled=True)
+	DefaultConnectionGene(key=(-4, 486), innovation=3035, weight=-1.0202579891358408, enabled=True)
+	DefaultConnectionGene(key=(-4, 487), innovation=3036, weight=0.509936103970742, enabled=True)
+	DefaultConnectionGene(key=(-4, 488), innovation=3037, weight=1.7235140822825297, enabled=True)
+	DefaultConnectionGene(key=(-4, 489), innovation=3038, weight=-0.47873924031563087, enabled=True)
+	DefaultConnectionGene(key=(-4, 490), innovation=3039, weight=-0.1681061488895389, enabled=True)
+	DefaultConnectionGene(key=(-4, 491), innovation=3040, weight=0.07873226977817488, enabled=True)
+	DefaultConnectionGene(key=(-4, 492), innovation=3041, weight=0.6926134067734273, enabled=True)
+	DefaultConnectionGene(key=(-4, 493), innovation=3042, weight=1.2746676184187706, enabled=True)
+	DefaultConnectionGene(key=(-4, 494), innovation=3043, weight=0.1980671659203943, enabled=True)
+	DefaultConnectionGene(key=(-4, 495), innovation=3044, weight=1.080382729399886, enabled=True)
+	DefaultConnectionGene(key=(-4, 496), innovation=3045, weight=0.2230996713333395, enabled=True)
+	DefaultConnectionGene(key=(-4, 497), innovation=3046, weight=0.7551978068349454, enabled=True)
+	DefaultConnectionGene(key=(-4, 498), innovation=3047, weight=-0.5371800682879664, enabled=True)
+	DefaultConnectionGene(key=(-4, 499), innovation=3048, weight=-0.7364610465469568, enabled=True)
+	DefaultConnectionGene(key=(-4, 500), innovation=3049, weight=1.0144614007597084, enabled=True)
+	DefaultConnectionGene(key=(-4, 501), innovation=3050, weight=0.6976629085636971, enabled=True)
+	DefaultConnectionGene(key=(-4, 502), innovation=3051, weight=0.2737864772993357, enabled=True)
+	DefaultConnectionGene(key=(-4, 503), innovation=3052, weight=-0.9383674701433674, enabled=True)
+	DefaultConnectionGene(key=(-4, 504), innovation=3053, weight=1.0972541156183004, enabled=True)
+	DefaultConnectionGene(key=(-4, 505), innovation=3054, weight=-0.5199134056904046, enabled=True)
+	DefaultConnectionGene(key=(-4, 506), innovation=3055, weight=1.1171880482536105, enabled=True)
+	DefaultConnectionGene(key=(-4, 507), innovation=3056, weight=0.10754864411142227, enabled=True)
+	DefaultConnectionGene(key=(-4, 508), innovation=3057, weight=-0.4148390689014086, enabled=True)
+	DefaultConnectionGene(key=(-4, 509), innovation=3058, weight=-2.105106737764157, enabled=True)
+	DefaultConnectionGene(key=(-4, 510), innovation=3059, weight=-1.9800439302243769, enabled=True)
+	DefaultConnectionGene(key=(-4, 511), innovation=3060, weight=-2.142263551403098, enabled=True)
+	DefaultConnectionGene(key=(-4, 512), innovation=3061, weight=0.15383329004720003, enabled=True)
+	DefaultConnectionGene(key=(-4, 513), innovation=3062, weight=-0.7249935948590104, enabled=True)
+	DefaultConnectionGene(key=(-4, 514), innovation=3063, weight=-1.6471543099886485, enabled=True)
+	DefaultConnectionGene(key=(-4, 515), innovation=3064, weight=0.9121297792728407, enabled=True)
+	DefaultConnectionGene(key=(-4, 516), innovation=3065, weight=1.0555640681991536, enabled=True)
+	DefaultConnectionGene(key=(-4, 517), innovation=3066, weight=0.778519118055071, enabled=True)
+	DefaultConnectionGene(key=(-4, 518), innovation=3067, weight=-1.3544703082594762, enabled=True)
+	DefaultConnectionGene(key=(-4, 519), innovation=3068, weight=-1.3460141632168037, enabled=True)
+	DefaultConnectionGene(key=(-4, 520), innovation=3069, weight=0.10013641621546271, enabled=True)
+	DefaultConnectionGene(key=(-4, 521), innovation=3070, weight=0.25301311448443137, enabled=True)
+	DefaultConnectionGene(key=(-4, 522), innovation=3071, weight=-0.3175096995079198, enabled=True)
+	DefaultConnectionGene(key=(-4, 523), innovation=3072, weight=0.15610285510164845, enabled=True)
+	DefaultConnectionGene(key=(-4, 524), innovation=3073, weight=-1.2090668243271616, enabled=True)
+	DefaultConnectionGene(key=(-4, 525), innovation=3074, weight=0.9625777412980326, enabled=True)
+	DefaultConnectionGene(key=(-4, 526), innovation=3075, weight=1.434480914782031, enabled=True)
+	DefaultConnectionGene(key=(-4, 527), innovation=3076, weight=-0.971599207713199, enabled=True)
+	DefaultConnectionGene(key=(-4, 528), innovation=3077, weight=-0.1157858887453084, enabled=True)
+	DefaultConnectionGene(key=(-3, 0), innovation=291, weight=0.2807107513869326, enabled=True)
+	DefaultConnectionGene(key=(-3, 481), innovation=2982, weight=0.28328068921950955, enabled=True)
+	DefaultConnectionGene(key=(-3, 482), innovation=2983, weight=-1.0129493974862578, enabled=True)
+	DefaultConnectionGene(key=(-3, 483), innovation=2984, weight=0.43035712292087513, enabled=True)
+	DefaultConnectionGene(key=(-3, 484), innovation=2985, weight=-0.8525919524845634, enabled=True)
+	DefaultConnectionGene(key=(-3, 485), innovation=2986, weight=-0.7765150152626661, enabled=True)
+	DefaultConnectionGene(key=(-3, 486), innovation=2987, weight=0.6260515470122728, enabled=True)
+	DefaultConnectionGene(key=(-3, 487), innovation=2988, weight=0.28885719002721844, enabled=True)
+	DefaultConnectionGene(key=(-3, 488), innovation=2989, weight=0.29794886528678677, enabled=True)
+	DefaultConnectionGene(key=(-3, 489), innovation=2990, weight=0.06703625457136636, enabled=True)
+	DefaultConnectionGene(key=(-3, 490), innovation=2991, weight=-0.22595959249287537, enabled=True)
+	DefaultConnectionGene(key=(-3, 491), innovation=2992, weight=0.8767005885022414, enabled=False)
+	DefaultConnectionGene(key=(-3, 492), innovation=2993, weight=1.0302775742724748, enabled=True)
+	DefaultConnectionGene(key=(-3, 493), innovation=2994, weight=0.6976293614804764, enabled=True)
+	DefaultConnectionGene(key=(-3, 494), innovation=2995, weight=0.5578442435967915, enabled=True)
+	DefaultConnectionGene(key=(-3, 495), innovation=2996, weight=0.21746076465020514, enabled=True)
+	DefaultConnectionGene(key=(-3, 496), innovation=2997, weight=-0.9826388434224436, enabled=True)
+	DefaultConnectionGene(key=(-3, 497), innovation=2998, weight=-0.21546778264410554, enabled=True)
+	DefaultConnectionGene(key=(-3, 498), innovation=2999, weight=0.7548474993871629, enabled=True)
+	DefaultConnectionGene(key=(-3, 499), innovation=3000, weight=-0.7408326222739505, enabled=True)
+	DefaultConnectionGene(key=(-3, 500), innovation=3001, weight=-0.3555967518792875, enabled=True)
+	DefaultConnectionGene(key=(-3, 501), innovation=3002, weight=-1.3857712255565264, enabled=True)
+	DefaultConnectionGene(key=(-3, 502), innovation=3003, weight=0.9010661182735522, enabled=True)
+	DefaultConnectionGene(key=(-3, 503), innovation=3004, weight=0.2514915699450484, enabled=True)
+	DefaultConnectionGene(key=(-3, 504), innovation=3005, weight=-0.18223561940609312, enabled=True)
+	DefaultConnectionGene(key=(-3, 505), innovation=3006, weight=-0.5474463519188162, enabled=True)
+	DefaultConnectionGene(key=(-3, 506), innovation=3007, weight=0.07436223370201667, enabled=True)
+	DefaultConnectionGene(key=(-3, 507), innovation=3008, weight=-1.080681786961296, enabled=True)
+	DefaultConnectionGene(key=(-3, 508), innovation=3009, weight=0.32004214968715194, enabled=True)
+	DefaultConnectionGene(key=(-3, 509), innovation=3010, weight=0.5758540394012496, enabled=True)
+	DefaultConnectionGene(key=(-3, 510), innovation=3011, weight=-0.37382039369407893, enabled=True)
+	DefaultConnectionGene(key=(-3, 511), innovation=3012, weight=-0.33182384278454763, enabled=True)
+	DefaultConnectionGene(key=(-3, 512), innovation=3013, weight=1.743739028471797, enabled=True)
+	DefaultConnectionGene(key=(-3, 513), innovation=3014, weight=0.165998819326702, enabled=True)
+	DefaultConnectionGene(key=(-3, 514), innovation=3015, weight=-0.24652392194314685, enabled=True)
+	DefaultConnectionGene(key=(-3, 515), innovation=3016, weight=0.70957499339833, enabled=True)
+	DefaultConnectionGene(key=(-3, 516), innovation=3017, weight=-0.9855773706077178, enabled=True)
+	DefaultConnectionGene(key=(-3, 517), innovation=3018, weight=0.20701938775966516, enabled=True)
+	DefaultConnectionGene(key=(-3, 518), innovation=3019, weight=-0.2791540714077272, enabled=True)
+	DefaultConnectionGene(key=(-3, 519), innovation=3020, weight=-0.8741488301521662, enabled=True)
+	DefaultConnectionGene(key=(-3, 520), innovation=3021, weight=0.15646426125380297, enabled=True)
+	DefaultConnectionGene(key=(-3, 521), innovation=3022, weight=-0.7169648399444105, enabled=True)
+	DefaultConnectionGene(key=(-3, 522), innovation=3023, weight=-1.0642941524726308, enabled=True)
+	DefaultConnectionGene(key=(-3, 523), innovation=3024, weight=0.8554312976288856, enabled=True)
+	DefaultConnectionGene(key=(-3, 524), innovation=3025, weight=-0.39614988606827045, enabled=True)
+	DefaultConnectionGene(key=(-3, 525), innovation=3026, weight=-0.09030179403953707, enabled=True)
+	DefaultConnectionGene(key=(-3, 526), innovation=3027, weight=-0.1479222527729127, enabled=True)
+	DefaultConnectionGene(key=(-3, 527), innovation=3028, weight=1.5059093662548868, enabled=True)
+	DefaultConnectionGene(key=(-3, 528), innovation=3029, weight=0.29521623543729286, enabled=True)
+	DefaultConnectionGene(key=(-2, 0), innovation=290, weight=-0.05589146965669328, enabled=True)
+	DefaultConnectionGene(key=(-2, 481), innovation=2934, weight=1.4764403331129936, enabled=True)
+	DefaultConnectionGene(key=(-2, 482), innovation=2935, weight=-0.44302046981550036, enabled=True)
+	DefaultConnectionGene(key=(-2, 483), innovation=2936, weight=0.08791713601469893, enabled=True)
+	DefaultConnectionGene(key=(-2, 484), innovation=2937, weight=-0.15181170008987346, enabled=True)
+	DefaultConnectionGene(key=(-2, 485), innovation=2938, weight=0.44745042935336965, enabled=True)
+	DefaultConnectionGene(key=(-2, 486), innovation=2939, weight=0.8698351079156597, enabled=True)
+	DefaultConnectionGene(key=(-2, 487), innovation=2940, weight=0.8606733214766297, enabled=True)
+	DefaultConnectionGene(key=(-2, 488), innovation=2941, weight=-1.2187637929600175, enabled=True)
+	DefaultConnectionGene(key=(-2, 489), innovation=2942, weight=1.3987848328042003, enabled=True)
+	DefaultConnectionGene(key=(-2, 490), innovation=2943, weight=0.0632634113872903, enabled=True)
+	DefaultConnectionGene(key=(-2, 491), innovation=2944, weight=0.530574666096064, enabled=True)
+	DefaultConnectionGene(key=(-2, 492), innovation=2945, weight=1.564709273489307, enabled=True)
+	DefaultConnectionGene(key=(-2, 493), innovation=2946, weight=0.047232823764681964, enabled=True)
+	DefaultConnectionGene(key=(-2, 494), innovation=2947, weight=0.7201348296434797, enabled=True)
+	DefaultConnectionGene(key=(-2, 495), innovation=2948, weight=0.2634545876663208, enabled=True)
+	DefaultConnectionGene(key=(-2, 496), innovation=2949, weight=1.0598956412457858, enabled=True)
+	DefaultConnectionGene(key=(-2, 497), innovation=2950, weight=1.3689826112268428, enabled=True)
+	DefaultConnectionGene(key=(-2, 498), innovation=2951, weight=1.1696182316692105, enabled=True)
+	DefaultConnectionGene(key=(-2, 499), innovation=2952, weight=0.2807491286205325, enabled=True)
+	DefaultConnectionGene(key=(-2, 500), innovation=2953, weight=1.4912099978679028, enabled=True)
+	DefaultConnectionGene(key=(-2, 501), innovation=2954, weight=0.2725188835286129, enabled=True)
+	DefaultConnectionGene(key=(-2, 502), innovation=2955, weight=-0.7766560017632265, enabled=True)
+	DefaultConnectionGene(key=(-2, 503), innovation=2956, weight=0.16341034435014873, enabled=True)
+	DefaultConnectionGene(key=(-2, 504), innovation=2957, weight=0.7952983574042143, enabled=True)
+	DefaultConnectionGene(key=(-2, 505), innovation=2958, weight=0.4169981474712092, enabled=True)
+	DefaultConnectionGene(key=(-2, 506), innovation=2959, weight=-0.6402275852085755, enabled=True)
+	DefaultConnectionGene(key=(-2, 507), innovation=2960, weight=-0.12357916616782613, enabled=True)
+	DefaultConnectionGene(key=(-2, 508), innovation=2961, weight=0.2596879163415067, enabled=True)
+	DefaultConnectionGene(key=(-2, 509), innovation=2962, weight=0.9884194067339324, enabled=True)
+	DefaultConnectionGene(key=(-2, 510), innovation=2963, weight=-0.09011229821323782, enabled=True)
+	DefaultConnectionGene(key=(-2, 511), innovation=2964, weight=-0.29544018858735194, enabled=True)
+	DefaultConnectionGene(key=(-2, 512), innovation=2965, weight=1.425277229611537, enabled=True)
+	DefaultConnectionGene(key=(-2, 513), innovation=2966, weight=-0.0117063578299237, enabled=True)
+	DefaultConnectionGene(key=(-2, 514), innovation=2967, weight=-0.17341619372657857, enabled=True)
+	DefaultConnectionGene(key=(-2, 515), innovation=2968, weight=0.34801195056127376, enabled=True)
+	DefaultConnectionGene(key=(-2, 516), innovation=2969, weight=0.7040388033843784, enabled=True)
+	DefaultConnectionGene(key=(-2, 517), innovation=2970, weight=1.5053525142595139, enabled=True)
+	DefaultConnectionGene(key=(-2, 518), innovation=2971, weight=-0.33275409263518924, enabled=True)
+	DefaultConnectionGene(key=(-2, 519), innovation=2972, weight=-0.4481776363725744, enabled=True)
+	DefaultConnectionGene(key=(-2, 520), innovation=2973, weight=0.27911376705266766, enabled=True)
+	DefaultConnectionGene(key=(-2, 521), innovation=2974, weight=-0.12134346490984528, enabled=True)
+	DefaultConnectionGene(key=(-2, 522), innovation=2975, weight=-1.7521594161276157, enabled=True)
+	DefaultConnectionGene(key=(-2, 523), innovation=2976, weight=-0.6028710508396042, enabled=True)
+	DefaultConnectionGene(key=(-2, 524), innovation=2977, weight=0.4954641888888967, enabled=True)
+	DefaultConnectionGene(key=(-2, 525), innovation=2978, weight=-1.11675801207201, enabled=True)
+	DefaultConnectionGene(key=(-2, 526), innovation=2979, weight=-0.04467967434910752, enabled=True)
+	DefaultConnectionGene(key=(-2, 527), innovation=2980, weight=-0.43394704986340504, enabled=True)
+	DefaultConnectionGene(key=(-2, 528), innovation=2981, weight=-1.0621895535793862, enabled=True)
+	DefaultConnectionGene(key=(-1, 0), innovation=289, weight=-0.4128208804996758, enabled=True)
+	DefaultConnectionGene(key=(-1, 481), innovation=2886, weight=-0.6647654502922702, enabled=True)
+	DefaultConnectionGene(key=(-1, 482), innovation=2887, weight=-0.8086845028669452, enabled=True)
+	DefaultConnectionGene(key=(-1, 483), innovation=2888, weight=0.1470847708678366, enabled=True)
+	DefaultConnectionGene(key=(-1, 484), innovation=2889, weight=0.005075120586590709, enabled=True)
+	DefaultConnectionGene(key=(-1, 485), innovation=2890, weight=0.1338126756407236, enabled=True)
+	DefaultConnectionGene(key=(-1, 486), innovation=2891, weight=-0.06788421909424823, enabled=True)
+	DefaultConnectionGene(key=(-1, 487), innovation=2892, weight=0.7847131941791696, enabled=True)
+	DefaultConnectionGene(key=(-1, 488), innovation=2893, weight=-0.15104346121737994, enabled=True)
+	DefaultConnectionGene(key=(-1, 489), innovation=2894, weight=-1.395541787570306, enabled=True)
+	DefaultConnectionGene(key=(-1, 490), innovation=2895, weight=-0.10406947125981339, enabled=True)
+	DefaultConnectionGene(key=(-1, 491), innovation=2896, weight=-0.16855310526926015, enabled=True)
+	DefaultConnectionGene(key=(-1, 492), innovation=2897, weight=0.34737970640205174, enabled=True)
+	DefaultConnectionGene(key=(-1, 493), innovation=2898, weight=-1.486326412468558, enabled=True)
+	DefaultConnectionGene(key=(-1, 494), innovation=2899, weight=-1.9744454634792055, enabled=True)
+	DefaultConnectionGene(key=(-1, 495), innovation=2900, weight=-0.8590431576105462, enabled=True)
+	DefaultConnectionGene(key=(-1, 496), innovation=2901, weight=0.21330649604771884, enabled=True)
+	DefaultConnectionGene(key=(-1, 497), innovation=2902, weight=0.9595847376735018, enabled=True)
+	DefaultConnectionGene(key=(-1, 498), innovation=2903, weight=0.9996295809848512, enabled=True)
+	DefaultConnectionGene(key=(-1, 499), innovation=2904, weight=-3.2396870938196427, enabled=True)
+	DefaultConnectionGene(key=(-1, 500), innovation=2905, weight=-0.1445297969836004, enabled=True)
+	DefaultConnectionGene(key=(-1, 501), innovation=2906, weight=1.4673309434524124, enabled=True)
+	DefaultConnectionGene(key=(-1, 502), innovation=2907, weight=0.754559918277389, enabled=True)
+	DefaultConnectionGene(key=(-1, 503), innovation=2908, weight=1.0227509589735657, enabled=True)
+	DefaultConnectionGene(key=(-1, 504), innovation=2909, weight=0.5339233572351212, enabled=True)
+	DefaultConnectionGene(key=(-1, 505), innovation=2910, weight=-0.27342927978892817, enabled=True)
+	DefaultConnectionGene(key=(-1, 506), innovation=2911, weight=-0.77299638151938, enabled=True)
+	DefaultConnectionGene(key=(-1, 507), innovation=2912, weight=-0.27433283303864, enabled=True)
+	DefaultConnectionGene(key=(-1, 508), innovation=2913, weight=0.44633328759749136, enabled=True)
+	DefaultConnectionGene(key=(-1, 509), innovation=2914, weight=-0.8226120688330134, enabled=True)
+	DefaultConnectionGene(key=(-1, 510), innovation=2915, weight=-1.0104447608177674, enabled=True)
+	DefaultConnectionGene(key=(-1, 511), innovation=2916, weight=-0.4347276528007895, enabled=True)
+	DefaultConnectionGene(key=(-1, 512), innovation=2917, weight=0.8159913457300823, enabled=True)
+	DefaultConnectionGene(key=(-1, 513), innovation=2918, weight=0.8445556211443541, enabled=True)
+	DefaultConnectionGene(key=(-1, 514), innovation=2919, weight=-0.8662638088236297, enabled=True)
+	DefaultConnectionGene(key=(-1, 515), innovation=2920, weight=-0.3267268085490351, enabled=True)
+	DefaultConnectionGene(key=(-1, 516), innovation=2921, weight=-0.514269183956153, enabled=True)
+	DefaultConnectionGene(key=(-1, 517), innovation=2922, weight=-1.622800509908634, enabled=True)
+	DefaultConnectionGene(key=(-1, 518), innovation=2923, weight=-0.19235670108316522, enabled=True)
+	DefaultConnectionGene(key=(-1, 519), innovation=2924, weight=-0.005913624353268817, enabled=True)
+	DefaultConnectionGene(key=(-1, 520), innovation=2925, weight=-0.4775075198858677, enabled=False)
+	DefaultConnectionGene(key=(-1, 521), innovation=2926, weight=-0.679846647216461, enabled=True)
+	DefaultConnectionGene(key=(-1, 522), innovation=2927, weight=-1.3264485230553356, enabled=True)
+	DefaultConnectionGene(key=(-1, 523), innovation=2928, weight=-2.0955951644941297, enabled=True)
+	DefaultConnectionGene(key=(-1, 524), innovation=2929, weight=-0.9682023004334275, enabled=True)
+	DefaultConnectionGene(key=(-1, 525), innovation=2930, weight=0.31421477991409946, enabled=True)
+	DefaultConnectionGene(key=(-1, 526), innovation=2931, weight=-0.34045610442768404, enabled=True)
+	DefaultConnectionGene(key=(-1, 527), innovation=2932, weight=-0.4784444587401358, enabled=True)
+	DefaultConnectionGene(key=(-1, 528), innovation=2933, weight=0.3661706993375749, enabled=True)
+	DefaultConnectionGene(key=(-1, 778), innovation=4637, weight=0.25564736490110795, enabled=True)
+	DefaultConnectionGene(key=(481, 0), innovation=3126, weight=-0.7821884221521177, enabled=True)
+	DefaultConnectionGene(key=(482, 0), innovation=3127, weight=0.5070418428496417, enabled=True)
+	DefaultConnectionGene(key=(483, 0), innovation=3128, weight=0.035379153347613546, enabled=True)
+	DefaultConnectionGene(key=(484, 0), innovation=3129, weight=-0.07340107941544333, enabled=True)
+	DefaultConnectionGene(key=(485, 0), innovation=3130, weight=0.1944351181487325, enabled=True)
+	DefaultConnectionGene(key=(486, 0), innovation=3131, weight=0.1688177016705008, enabled=True)
+	DefaultConnectionGene(key=(487, 0), innovation=3132, weight=-0.5588084813987396, enabled=True)
+	DefaultConnectionGene(key=(488, 0), innovation=3133, weight=0.2843397616350119, enabled=False)
+	DefaultConnectionGene(key=(489, 0), innovation=3134, weight=1.0088205903521283, enabled=True)
+	DefaultConnectionGene(key=(490, 0), innovation=3135, weight=-0.15855764396108338, enabled=True)
+	DefaultConnectionGene(key=(491, 0), innovation=3136, weight=-0.4396705495913245, enabled=True)
+	DefaultConnectionGene(key=(492, 0), innovation=3137, weight=-0.6282577230465392, enabled=True)
+	DefaultConnectionGene(key=(493, 0), innovation=3138, weight=0.0694139342682431, enabled=True)
+	DefaultConnectionGene(key=(494, 0), innovation=3139, weight=0.5930068590223292, enabled=True)
+	DefaultConnectionGene(key=(495, 0), innovation=3140, weight=-0.801291914236396, enabled=True)
+	DefaultConnectionGene(key=(496, 0), innovation=3141, weight=0.7261764038561471, enabled=True)
+	DefaultConnectionGene(key=(497, 0), innovation=3142, weight=0.6325321928493585, enabled=True)
+	DefaultConnectionGene(key=(498, 0), innovation=3143, weight=1.215062953120353, enabled=True)
+	DefaultConnectionGene(key=(499, 0), innovation=3144, weight=-0.5642824413610523, enabled=True)
+	DefaultConnectionGene(key=(500, 0), innovation=3145, weight=-0.9656570269515699, enabled=True)
+	DefaultConnectionGene(key=(501, 0), innovation=3146, weight=-0.12489352206483559, enabled=True)
+	DefaultConnectionGene(key=(502, 0), innovation=3147, weight=-0.11312642677459327, enabled=True)
+	DefaultConnectionGene(key=(503, 0), innovation=3148, weight=0.12407582400211842, enabled=True)
+	DefaultConnectionGene(key=(504, 0), innovation=3149, weight=0.20124559591844804, enabled=True)
+	DefaultConnectionGene(key=(505, 0), innovation=3150, weight=-0.21174979998684204, enabled=True)
+	DefaultConnectionGene(key=(506, 0), innovation=3151, weight=1.0282117457512199, enabled=True)
+	DefaultConnectionGene(key=(507, 0), innovation=3152, weight=0.5746935696229554, enabled=True)
+	DefaultConnectionGene(key=(508, 0), innovation=3153, weight=0.37439866441503566, enabled=True)
+	DefaultConnectionGene(key=(509, 0), innovation=3154, weight=-0.3135274914610129, enabled=True)
+	DefaultConnectionGene(key=(510, 0), innovation=3155, weight=-0.024383867165996553, enabled=True)
+	DefaultConnectionGene(key=(511, 0), innovation=3156, weight=-0.14631940080714878, enabled=True)
+	DefaultConnectionGene(key=(512, 0), innovation=3157, weight=-1.8360165404605415, enabled=True)
+	DefaultConnectionGene(key=(513, 0), innovation=3158, weight=0.45943211822544255, enabled=True)
+	DefaultConnectionGene(key=(514, 0), innovation=3159, weight=0.8271187587029463, enabled=True)
+	DefaultConnectionGene(key=(515, 0), innovation=3160, weight=0.4994159549636776, enabled=True)
+	DefaultConnectionGene(key=(516, 0), innovation=3161, weight=-0.5515137617938337, enabled=True)
+	DefaultConnectionGene(key=(517, 0), innovation=3162, weight=0.6101294819709269, enabled=True)
+	DefaultConnectionGene(key=(518, 0), innovation=3163, weight=1.0295674557598231, enabled=True)
+	DefaultConnectionGene(key=(519, 0), innovation=3164, weight=0.14431523076569763, enabled=True)
+	DefaultConnectionGene(key=(520, 0), innovation=3165, weight=1.0334590129538541, enabled=True)
+	DefaultConnectionGene(key=(521, 0), innovation=3166, weight=-0.0597332831838856, enabled=True)
+	DefaultConnectionGene(key=(522, 0), innovation=3167, weight=0.17604998110776848, enabled=True)
+	DefaultConnectionGene(key=(523, 0), innovation=3168, weight=-0.5147794377746875, enabled=True)
+	DefaultConnectionGene(key=(524, 0), innovation=3169, weight=0.15645165208552728, enabled=True)
+	DefaultConnectionGene(key=(525, 0), innovation=3170, weight=-0.6962646271456128, enabled=True)
+	DefaultConnectionGene(key=(526, 0), innovation=3171, weight=0.06549265601733911, enabled=True)
+	DefaultConnectionGene(key=(527, 0), innovation=3172, weight=0.24178670234739202, enabled=True)
+	DefaultConnectionGene(key=(528, 0), innovation=3173, weight=-0.1657922844171196, enabled=False)
+	DefaultConnectionGene(key=(528, 789), innovation=4663, weight=0.8376394870500729, enabled=True)
+	DefaultConnectionGene(key=(778, 520), innovation=4638, weight=-0.6303351650513633, enabled=True)
+	DefaultConnectionGene(key=(789, 0), innovation=4664, weight=0.6166218614927673, enabled=True)
+Saved winner genome -> /home/nwilliamsdev/ai-dev/nerd_learner/nerd-muzero/sweep_gated_lookup_s0.pkl
