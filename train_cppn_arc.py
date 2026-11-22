@@ -584,27 +584,29 @@ class ArcGatedPhenotype(nn.Module):
         self.conv_stem = nn.Conv2d(cfg.in_channels, cfg.channels, 3, padding=1)
         self.conv_mid = nn.Conv2d(cfg.channels, cfg.channels, 3, padding=1)
         self.conv_combine = nn.Conv2d(3 * cfg.channels, cfg.out_channels, 1)
-        # branch 4 (optional): global readout.  Pools the demo/query grids
-        # into one feature vector (mean over the variable-size demo batch),
-        # maps it to a 32-d "global statistics" feature, then a small shared
-        # head combines that feature with each cell's fixed position features
-        # (row/S, col/S, +1, +1) to predict that cell's colour.  ~22k params.
-        # Aims at counting / global-statistics / fill-the-rest tasks that the
-        # local (conv) and sequence branches handle awkwardly.
-        self.whole_feat = None
-        self.whole_head = None
+        # branch 4 (optional, v2): per-cell demo-lookup.  The v1 branch (mean-
+        # pool the whole grid -> one 32-d feature -> shared per-cell head)
+        # scored LAST on unseen sets: a single global number per task is too
+        # weak to carry real predictions.  v2 keeps the per-cell structure:
+        # for each grid cell it gathers [query-colour, mean demo-in colour at
+        # that cell, mean demo-out colour there, demo in->out change there,
+        # row/S, col/S] and maps it through a small MLP to a 10-way colour
+        # prediction.  This targets the dominant ARC rule family — "the demo
+        # shows input cell -> output cell at the SAME position" (colour maps,
+        # fills, replacements) — with a ~0.5k-param head the CPPN can encode
+        # easily, and the conv/sequence branches cover the rest.
+        self.lookup_fc1 = None
+        self.lookup_fc2 = None
         if cfg.gated_branches >= 4:
-            flat = 3 * cfg.in_channels * cfg.grid_size * cfg.grid_size
             S = cfg.grid_size
-            self.whole_feat = nn.Linear(flat, 32)
-            self.whole_head = nn.Linear(32 + 4, cfg.out_channels)
+            self.lookup_fc1 = nn.Linear(4 + 2, 24)
+            self.lookup_fc2 = nn.Linear(24, cfg.out_channels)
             # row-major cell order: row value held for S cells (repeat_interleave),
             # column value cycles through the full range each row (repeat)
             rows = torch.linspace(0.0, 1.0, S).repeat_interleave(S)
             cols = torch.linspace(0.0, 1.0, S).repeat(S)
-            pos = torch.stack([rows, cols, torch.ones(S * S), torch.ones(S * S)],
-                              dim=1)
-            self.register_buffer("_whole_pos", pos)
+            self.register_buffer("_lookup_pos",
+                                 torch.stack([rows, cols], dim=1))
         # per-architecture gate (encoded by the CPPN like any other weight)
         self.gate = nn.Parameter(torch.zeros(cfg.gated_branches))
         self.out_channels = cfg.out_channels
@@ -631,22 +633,32 @@ class ArcGatedPhenotype(nn.Module):
         x = torch.cat([enc(demo_in), enc(demo_out), enc(qi)], dim=1)   # [D,3k,S,S]
         return self.conv_combine(x).mean(dim=0, keepdim=True)          # [1,out,S,S]
 
-    def _whole_logits(self, ep: Episode) -> torch.Tensor:
-        assert self.whole_feat is not None and self.whole_head is not None
-        pos = self._whole_pos
-        assert pos is not None
-        # demo tensors are [D, C, S, S] with VARIABLE D per task, so pool the
-        # demo batch (mean over demos) before flattening -> fixed
-        # 3 * C * S * S vector regardless of how many demos the task has.
-        din = ep.demo_in.mean(dim=0)
-        dout = ep.demo_out.mean(dim=0)
-        flat = torch.cat([din.reshape(-1), dout.reshape(-1),
-                          ep.query_in.reshape(-1)], dim=0)
-        feat = torch.relu(self.whole_feat(flat))            # [32]
+    def _masked_demo_mean(self, ep: Episode, which: str) -> torch.Tensor:
+        """Mean of the demo grids, excluding padded (0,0) demo slots -> [1,C,S,S]."""
+        t = ep.demo_in if which == "in" else ep.demo_out        # [D,C,S,S] (or [C,S,S])
+        shapes = ep.demo_in_shape if which == "in" else ep.demo_out_shape
+        if t.dim() == 3:                                        # single demo
+            keep = 1.0 if (shapes and shapes[0] != (0, 0)) else 0.0
+            return t.unsqueeze(0).unsqueeze(0) * keep           # [1,1,S,S]
+        keep = torch.tensor([(h, w) != (0, 0) for (h, w) in shapes],
+                           device=t.device, dtype=t.dtype).view(-1, 1, 1, 1)
+        n = keep.sum().clamp(min=1.0)
+        return (t * keep).sum(dim=0, keepdim=True) / n          # [1,C,S,S]
+
+    def _lookup_logits(self, ep: Episode) -> torch.Tensor:
+        assert self.lookup_fc1 is not None and self.lookup_fc2 is not None
+        lookup_pos = self._lookup_pos
+        assert isinstance(lookup_pos, torch.Tensor)
         S = self.grid_size
-        x = torch.cat([feat.unsqueeze(0).expand(S * S, -1), pos],
-                      dim=1)                                # [S*S, 36]
-        logits = self.whole_head(x)                         # [S*S, out]
+        din = self._masked_demo_mean(ep, "in")
+        dout = self._masked_demo_mean(ep, "out")
+        q = ep.query_in.unsqueeze(0)                           # [1,C,S,S]
+        feats = torch.cat([q, din, dout, dout - din], dim=1)   # [1,4,S,S]
+        x = feats.permute(0, 2, 3, 1).reshape(1, S * S, 4)     # [1,S*S,4]
+        pos = lookup_pos.unsqueeze(0).expand(1, S * S, -1)
+        x = torch.cat([x, pos], dim=2)                         # [1,S*S,6]
+        h = torch.relu(self.lookup_fc1(x))                     # [1,S*S,24]
+        logits = self.lookup_fc2(h)                            # [1,S*S,out]
         return logits.reshape(1, S, S, self.out_channels).permute(0, 3, 1, 2)
 
     def forward(self, ep: Episode) -> torch.Tensor:
@@ -654,8 +666,8 @@ class ArcGatedPhenotype(nn.Module):
         logit_conv = self._conv_logits(ep)
         g = torch.softmax(self.gate, dim=0)
         out = g[0] * logit_dn + g[1] * logit_attn + g[2] * logit_conv
-        if self.whole_head is not None:
-            out = out + g[3] * self._whole_logits(ep)
+        if self.lookup_fc2 is not None:
+            out = out + g[3] * self._lookup_logits(ep)
         return out
 
 
