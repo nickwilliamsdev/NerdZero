@@ -384,6 +384,70 @@ budget that actually discriminates.
 
 ---
 
+### 2026-11-23: Adam-vs-SGD ceiling test — DECISIVE (optimizer was the bottleneck)
+
+`diag_adam_ceiling.py` (rewritten to score the CURRENT best under the CURRENT
+protocol: clip 10, lr 0.1, 300 steps; Adam arms unclipped at lr 0.01 and
+lr 0.001) on the unseen 16-task set-13:
+
+| genome | SGD (lr .1, clip 10) | Adam lr 0.01 | Adam lr 0.001 |
+|---|---|---|---|
+| pop16-e12-s0 (current best) | **0.8544** | **0.9837** | 0.7604 |
+| gated96 pop4 e300 | 0.8766 | 0.9338 | 0.8352 |
+| random genome | (in diag_adam_ceiling.txt) | | |
+
+- The SGD arm reproduces the recorded 0.8547 for pop16-e12-s0 (0.8544 this
+  run) — pipeline verified faithful.
+- **Adam lr 0.01 lifts the fixed best genome from 0.8544 to 0.9837 with NO
+  retraining.** The two tasks stuck under SGD (cf5fd0ad 0.556→0.972,
+  27f8ce4f 0.617→1.000) are solved. So the ~0.85 ceiling was
+  **optimizer-limited, NOT phenotype-expressivity-limited** — the opposite of
+  what round 2's deep3/lookup losses suggested, and the exact branch
+  `diag_adam_ceiling.py` was set up to test.
+- Adam lr 0.001 is *worse than SGD* (0.7604) — it's the specific adaptive
+  step-size, not "Adam generally".
+- Note: under clip 10 + lr 0.1 the gated96 genome actually re-scores 0.8766
+  (higher than pop16's 0.8544) — the old "round 2 verdict" numbers were
+  scored before the clip change and do not transfer; the Adam comparison is
+  what matters now.
+
+**Decision:** move the in-context optimizer to Adam (lr 0.01) and re-run
+meta-selection so NEAT selects on the Adam-adapted fitness. Implemented:
+`--in-context-optimizer adam --adam-lr 0.01` (threaded through Config,
+`sgd_adapt`, inner meta-training + eval; default stays SGD for backward
+compat). Smoke-verified under Adam (fitness spread stdev 0.277, no freeze).
+
+### 2026-11-23 (cont): Adam eval-budget probe + meta-selection run launched
+
+`diag_adam_budget.py` (Adam lr 0.01, best genome vs random, full set-13):
+
+| budget | best | random | gap |
+|---|---|---|---|
+| 10 | 0.3588 | 0.3744 | **−0.016** |
+| 20 | 0.5411 | 0.5497 | −0.009 |
+| 50 | 0.7267 | 0.6405 | +0.086 |
+| 100 | 0.8795 | 0.7930 | **+0.087** |
+| 300 | 0.9718 | 0.9050 | +0.067 |
+
+- Under Adam, short budgets (≤20) are *uninformative* (gap negative — random
+  is even slightly ahead), mirroring the earlier SGD finding that short-budget
+  selection is harmful. The full selection signal appears by **100 steps** and
+  does NOT grow at 300, so the Adam meta-selection run uses **eval 100 steps**
+  (1/3 the cost of 300 for the same signal).
+- Random Adam-300 = 0.9050, i.e. the ceiling for a random genome under Adam
+  is ~0.90; the evolved genome's 0.9837 is the init-quality contribution.
+  Meta-selection has +0.087 of signal to work with at 100 steps — real, but
+  note the fixed old best already gets 0.9837 under Adam, so the bar for the
+  new run to "win" on set-13 is high; the win case is a genome that clears
+  0.9837 AND/beat random by more.
+
+**In flight:** `launch_adam300_pop16_e12_s0.sh` (same recipe as the current
+best: gated d48/2L, pop16, e12, lr0.1, 30 gens, fixed-eval, seed 0 — but
+`--in-context-optimizer adam --adam-lr 0.01 --eval-sgd-steps 100`),
+log `run_adam100_pop16_e12_s0.log`, winner ->
+`cppn_arc_adam100_pop16_e12_s0.pkl`. Verdict when done:
+`eval_set13_adam.py` (Adam-300 on set-13 vs the old best and a random genome).
+
 ## File map
 
 | File | What |
@@ -396,6 +460,10 @@ budget that actually discriminates.
 | `eval_generalization.py` | 10 independent random 8-task splits — the trustworthy generalisation test. |
 | `eval_set13_300steps.py` | 300-step in-context cross-eval on the unseen 16-task set (seed 13) — the overfit yardstick; re-creates the baseline 0.7956 ranking. |
 | `diag_speed_vs_steps.py` | accuracy-vs-in-context-steps curve for several genomes (evolved vs random) on set 13 — the diagnostic that localises the CPPN's value to the low-step regime. |
+| `diag_adam_ceiling.py` / `.txt` | in-context OPTIMIZER A/B (SGD clip10 lr0.1 vs Adam lr 0.01/0.001, 300 steps) on set-13 for current best + gated96 + random — the decisive test that the ~0.85 ceiling was optimizer-limited (2026-11-23). |
+| `diag_adam_budget.py` | Adam budget-vs-expressivity probe (10/20/50/100/300 steps, best vs random genome) to pick the eval budget for Adam meta-selection (2026-11-23; result: 100). |
+| `eval_set13_adam.py` | Adam-300-step cross-eval on the unseen set-13 (successor yardstick to eval_set13_300steps.py); scores the Adam-run winner vs old best vs random (2026-11-23). |
+| `launch_adam300_pop16_e12_s0.sh` | launch for the Adam meta-selection run (pop16/e12/lr0.1/30 gens, `--in-context-optimizer adam --adam-lr 0.01 --eval-sgd-steps 100`). |
 | `eval_gateblend.py` | fixed-eval + 10-split for the damped gate-blend winner vs delta baseline vs dn24, with gate values. |
 | `check_gate_blend.py` | numerical unit check that `gate_task_scale` blends to the two endpoints. |
 | `cppn_arc_*.pkl` | saved winner genomes (one per run). |

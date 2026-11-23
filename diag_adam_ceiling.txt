@@ -1,0 +1,43 @@
+/home/nwilliamsdev/ai-dev/nerd_learner/nerd-muzero/train_cppn_arc.py:581: UserWarning: enable_nested_tensor is True, but self.use_nested_tensor is False because encoder_layer.norm_first was True
+  self.encoder = nn.TransformerEncoder(layer, num_layers=L)
+Unseen set-13 (seed 13), 300-step in-context optimizer A/B (16 tasks): ['99306f82', 'd13f3404', '9bebae7a', '14b8e18c', '28e73c20', 'f45f5ca7', '9f27f097', 'c8cbb738', '8e301a54', 'e633a9e5', 'e45ef808', 'cf5fd0ad', 'b942fd60', 'fcc82909', '27f8ce4f', '4e469f39']
+arms: sgd(lr0.1,clip10.0)  adam_01(lr0.01)  adam_001(lr0.001)
+
+/home/nwilliamsdev/ai-dev/nerd_learner/nerd-muzero/train_cppn_arc.py:581: UserWarning: enable_nested_tensor is True, but self.use_nested_tensor is False because encoder_layer.norm_first was True
+  self.encoder = nn.TransformerEncoder(layer, num_layers=L)
+pop16-e12-s0 (best)    sgd      mean=0.8544  per-task=['0.956', '0.806', '0.951', '0.780', '1.000', '0.940', '0.701', '1.000', '0.920', '0.840', '0.944', '0.556', '0.750', '0.940', '0.617', '0.970']  (715s elapsed)
+pop16-e12-s0 (best)    adam_01  mean=0.9837  per-task=['1.000', '1.000', '1.000', '0.940', '1.000', '1.000', '0.861', '1.000', '0.980', '1.000', '0.986', '0.972', '1.000', '1.000', '1.000', '1.000']  (1425s elapsed)
+pop16-e12-s0 (best)    adam_001 mean=0.7604  per-task=['0.827', '0.694', '0.944', '0.740', '0.722', '0.930', '0.632', '0.778', '0.910', '0.520', '0.785', '0.528', '0.750', '0.900', '0.617', '0.890']  (2160s elapsed)
+
+gated96 pop4 e300      sgd      mean=0.8766  per-task=['0.951', '0.778', '0.979', '0.990', '0.917', '0.900', '0.701', '1.000', '0.950', '1.000', '0.903', '0.556', '0.750', '0.990', '0.691', '0.970']  (2982s elapsed)
+gated96 pop4 e300      adam_01  mean=0.9338  per-task=['0.996', '1.000', '1.000', '1.000', '1.000', '1.000', '0.792', '1.000', '0.950', '1.000', '0.931', '0.458', '1.000', '1.000', '0.815', '1.000']  (3822s elapsed)
+gated96 pop4 e300      adam_001 mean=0.8352  per-task=['0.840', '0.694', '0.965', '0.710', '1.000', '0.970', '0.819', '1.000', '0.930', '0.400', '0.806', '0.556', '0.944', '1.000', '0.728', '1.000']  (4665s elapsed)
+
+random                 sgd      mean=0.8402  per-task=['0.840', '0.694', '0.979', '0.950', '0.750', '0.900', '0.660', '1.000', '0.920', '1.000', '0.826', '0.556', '0.778', '0.990', '0.630', '0.970']  (5435s elapsed)
+random                 adam_01  mean=0.8905  per-task=['1.000', '1.000', '0.972', '0.960', '1.000', '0.980', '0.826', '1.000', '0.990', '1.000', '0.910', '0.556', '0.806', '1.000', '0.679', '0.570']  (6256s elapsed)
+random                 adam_001 mean=0.8801  per-task=['0.916', '0.694', '0.958', '0.840', '1.000', '0.960', '0.792', '1.000', '0.920', '0.960', '0.917', '0.556', '0.889', '1.000', '0.691', '0.990']  (7176s elapsed)
+
+=== per-task, pop16-e12-s0 (best): SGD vs Adam ===
+      task       sgd   adam_01  adam_001
+  99306f82     0.956     1.000     0.827
+  d13f3404     0.806     1.000     0.694
+  9bebae7a     0.951     1.000     0.944
+  14b8e18c     0.780     0.940     0.740
+  28e73c20     1.000     1.000     0.722
+  f45f5ca7     0.940     1.000     0.930
+  9f27f097     0.701     0.861     0.632
+  c8cbb738     1.000     1.000     0.778
+  8e301a54     0.920     0.980     0.910
+  e633a9e5     0.840     1.000     0.520
+  e45ef808     0.944     0.986     0.785
+  cf5fd0ad     0.556     0.972     0.528
+  b942fd60     0.750     1.000     0.750
+  fcc82909     0.940     1.000     0.900
+  27f8ce4f     0.617     1.000     0.617
+  4e469f39     0.970     1.000     0.890
+
+pop16-e12-s0 (best)    means 0.8544  0.9837  0.7604   | n_stuck(<0.65) 2  0  4
+gated96 pop4 e300      means 0.8766  0.9338  0.8352   | n_stuck(<0.65) 1  1  2
+random                 means 0.8402  0.8905  0.8801   | n_stuck(<0.65) 2  2  1
+
+total wall: 7176s
