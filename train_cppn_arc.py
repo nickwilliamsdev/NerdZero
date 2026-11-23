@@ -1598,7 +1598,26 @@ def run(cfg: Config):
     population.add_reporter(stats)
 
     n = max(1, cfg.generations)
-    winner = population.run(eval_genomes, n=n)
+
+    # Per-generation checkpoint of the best genome SEEN SO FAR (raw fitness,
+    # the value the NEAT reporter prints). `population.run` only returns/saves
+    # the winner at the very end, so an interrupted multi-hour run otherwise
+    # loses everything; this makes every completed generation recoverable.
+    best_seen = {"fit": -1.0, "genome": None}
+
+    def eval_genomes_ck(genomes, config):
+        eval_genomes(genomes, config)
+        for _id, genome in genomes:
+            if genome.fitness is not None and genome.fitness > best_seen["fit"]:
+                best_seen["fit"] = genome.fitness
+                best_seen["genome"] = genome
+        if best_seen["genome"] is not None:
+            import pickle
+            ckpt = os.path.join(_PROJECT_DIR, cfg.save_name + ".ckpt")
+            with open(ckpt, "wb") as f:
+                pickle.dump(best_seen["genome"], f)
+
+    winner = population.run(eval_genomes_ck, n=n)
 
     if winner is None:
         print("No winner returned.")

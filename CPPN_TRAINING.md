@@ -448,6 +448,18 @@ log `run_adam100_pop16_e12_s0.log`, winner ->
 `cppn_arc_adam100_pop16_e12_s0.pkl`. Verdict when done:
 `eval_set13_adam.py` (Adam-300 on set-13 vs the old best and a random genome).
 
+Gen-1 check (~2026-11-23): best=0.9532 mean=0.8838 stdev=0.042 on the 12-task
+fixed eval — healthy spread, NOT frozen, and in-sample selection is already
+in the 0.88-0.95 band (vs 0.71-0.75 under the old SGD-6-step protocol), i.e.
+the Adam-eval signal is both higher and more informative. Caveat: ~3170 s/gen
+on the contended GB10 (the vLLM engine holds the GPU most of the time), so
+30 gens ≈ 26 h. The run was restarted once with per-generation checkpointing
+(same seed 0, deterministic re-roll): the best genome seen so far is now
+written to `cppn_arc_adam100_pop16_e12_s0.pkl.ckpt` after EVERY completed
+generation, so the run can be interrupted at any time without losing results
+— read the .ckpt, score it with eval_set13_adam.py, and judge. (This
+checkpointing is now in train_cppn_arc.py for all future runs too.)
+
 ## File map
 
 | File | What |
