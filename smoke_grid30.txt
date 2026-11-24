@@ -1,0 +1,87 @@
+grid15: official-test fit 9/120, train fit 541/1000
+grid30: official-test fit 120/120, train fit 1000/1000
+smoke grid30 (pop4, n_eval=3, adam)...
+Smoke test config: Config(grid_size=30, max_demos=3, in_channels=1, out_channels=10, phenotype='attn', channels=8, attn_dim=48, attn_heads=4, attn_layers=2, cppn_iters=2, sgd_steps=6, sgd_lr=0.05, cppn_lr=0.005, n_eval=2, eval_sgd_steps=4, pop_size=3, cppn_num_hidden=6, cppn_num_outputs=1, generations=1, dynamic_substrate=True, substrate_dim=5, substrate_radius=0.25, coord_schema='auto', gated_branches=3, save_name='cppn_arc_winner.pkl', fixed_eval=False, meta_loss='delta', meta_loss_weight='mean', gate_meta='delta', gate_task_scale=0.5, in_context_optimizer='adam', adam_lr=0.01, seed=0, device='auto', log_every=1)
+Using device: cuda
+/home/nwilliamsdev/ai-dev/nerd_learner/nerd-muzero/train_cppn_arc.py:392: UserWarning: enable_nested_tensor is True, but self.use_nested_tensor is False because encoder_layer.norm_first was True
+  self.encoder = nn.TransformerEncoder(layer, num_layers=L)
+Phenotype: attn  |  params: 60634  (channels=8, attn_dim=48, S=30, out=10)
+Substrate: dim=5  schema=layer (auto, 4 layer types)  mode=dynamic (task stats)  radius=0.25
+Eligible ARC tasks: 1000  |  pop=3  cppn_hidden=6  device=cuda
+
+ ****** Running generation 0 ****** 
+
+/home/nwilliamsdev/ai-dev/nerd_learner/nerd-muzero/train_cppn_arc.py:392: UserWarning: enable_nested_tensor is True, but self.use_nested_tensor is False because encoder_layer.norm_first was True
+  self.encoder = nn.TransformerEncoder(layer, num_layers=L)
+[gen 1] sgd_task=1c56ad9f eval=['6fa7a44f', 'ea786f4a'] best=0.3889 mean=0.3241 (5.0s)
+    tasks solved (acc>0.99): 0/3
+Population's average fitness: 0.32407 stdev: 0.07291
+Best fitness: 0.38889 - size: (7, 41) - species 1 - id 3
+Average adjusted fitness: 0.102
+Mean genetic distance 2.794, standard deviation 1.397
+Population of 3 members in 1 species (after reproduction):
+   ID   age  size   fitness   adj fit  stag
+  ====  ===  ====  =========  =======  ====
+     1    0     3      0.389    0.102     0
+Total extinctions: 0
+Generation time: 4.971 sec
+
+Best individual in generation 0 meets fitness threshold - complexity: (7, 41)
+
+=== Done ===
+Winner fitness: 0.3888889029622078
+Winner genome:
+Key: 3
+Fitness: 0.3888889029622078
+Nodes:
+	0 DefaultNodeGene(key=0, bias=0.10185807362755127, response=1.0, activation=tanh, aggregation=sum, time_constant=1.0)
+	13 DefaultNodeGene(key=13, bias=-0.07752010758181109, response=1.0, activation=tanh, aggregation=sum, time_constant=1.0)
+	14 DefaultNodeGene(key=14, bias=0.368525179725122, response=1.0, activation=tanh, aggregation=sum, time_constant=1.0)
+	15 DefaultNodeGene(key=15, bias=0.07511374128354155, response=1.0, activation=tanh, aggregation=sum, time_constant=1.0)
+	16 DefaultNodeGene(key=16, bias=0.1314980264008105, response=1.0, activation=tanh, aggregation=sum, time_constant=1.0)
+	17 DefaultNodeGene(key=17, bias=0.25474704996639247, response=1.0, activation=tanh, aggregation=sum, time_constant=1.0)
+	18 DefaultNodeGene(key=18, bias=1.2006753529571974, response=1.0, activation=tanh, aggregation=sum, time_constant=1.0)
+Connections:
+	DefaultConnectionGene(key=(-5, 0), innovation=41, weight=0.3715031435883596, enabled=True)
+	DefaultConnectionGene(key=(-5, 13), innovation=102, weight=-0.029396600035319655, enabled=True)
+	DefaultConnectionGene(key=(-5, 14), innovation=103, weight=-0.02393922279258433, enabled=True)
+	DefaultConnectionGene(key=(-5, 15), innovation=104, weight=-0.4517749957955335, enabled=True)
+	DefaultConnectionGene(key=(-5, 16), innovation=105, weight=0.38941491022605135, enabled=True)
+	DefaultConnectionGene(key=(-5, 17), innovation=106, weight=0.1149858518244393, enabled=True)
+	DefaultConnectionGene(key=(-5, 18), innovation=107, weight=0.07666059586930193, enabled=True)
+	DefaultConnectionGene(key=(-4, 0), innovation=40, weight=-0.6229668511792338, enabled=True)
+	DefaultConnectionGene(key=(-4, 13), innovation=96, weight=-0.2507656428699665, enabled=True)
+	DefaultConnectionGene(key=(-4, 14), innovation=97, weight=-0.17699096808048373, enabled=True)
+	DefaultConnectionGene(key=(-4, 15), innovation=98, weight=0.43542787880594197, enabled=True)
+	DefaultConnectionGene(key=(-4, 16), innovation=99, weight=0.19892098377501405, enabled=True)
+	DefaultConnectionGene(key=(-4, 17), innovation=100, weight=-0.3238728792517946, enabled=True)
+	DefaultConnectionGene(key=(-4, 18), innovation=101, weight=-0.07343696901883713, enabled=True)
+	DefaultConnectionGene(key=(-3, 0), innovation=39, weight=-0.48398897729016094, enabled=True)
+	DefaultConnectionGene(key=(-3, 13), innovation=90, weight=0.6739006886300655, enabled=True)
+	DefaultConnectionGene(key=(-3, 14), innovation=91, weight=-0.289824054983451, enabled=True)
+	DefaultConnectionGene(key=(-3, 15), innovation=92, weight=0.10990255720985201, enabled=True)
+	DefaultConnectionGene(key=(-3, 16), innovation=93, weight=-0.5054125591487687, enabled=True)
+	DefaultConnectionGene(key=(-3, 17), innovation=94, weight=0.09107331854810612, enabled=True)
+	DefaultConnectionGene(key=(-3, 18), innovation=95, weight=-0.5407079934145793, enabled=True)
+	DefaultConnectionGene(key=(-2, 0), innovation=38, weight=-0.10620851864365558, enabled=True)
+	DefaultConnectionGene(key=(-2, 13), innovation=84, weight=-1.1524328301125037, enabled=True)
+	DefaultConnectionGene(key=(-2, 14), innovation=85, weight=0.7014811019581179, enabled=True)
+	DefaultConnectionGene(key=(-2, 15), innovation=86, weight=0.26784629495610285, enabled=True)
+	DefaultConnectionGene(key=(-2, 16), innovation=87, weight=0.258288999018488, enabled=True)
+	DefaultConnectionGene(key=(-2, 17), innovation=88, weight=-0.37788823275691275, enabled=True)
+	DefaultConnectionGene(key=(-2, 18), innovation=89, weight=-0.0029103795853673313, enabled=True)
+	DefaultConnectionGene(key=(-1, 0), innovation=37, weight=-0.518865202602559, enabled=True)
+	DefaultConnectionGene(key=(-1, 13), innovation=78, weight=0.44753138993140346, enabled=True)
+	DefaultConnectionGene(key=(-1, 14), innovation=79, weight=-0.11011585830636282, enabled=True)
+	DefaultConnectionGene(key=(-1, 15), innovation=80, weight=-0.9481365429897171, enabled=True)
+	DefaultConnectionGene(key=(-1, 16), innovation=81, weight=0.2655644613892104, enabled=True)
+	DefaultConnectionGene(key=(-1, 17), innovation=82, weight=-0.14931109537420134, enabled=True)
+	DefaultConnectionGene(key=(-1, 18), innovation=83, weight=-0.608879233993743, enabled=True)
+	DefaultConnectionGene(key=(13, 0), innovation=108, weight=1.2346274110136632, enabled=True)
+	DefaultConnectionGene(key=(14, 0), innovation=109, weight=-0.24681115603051326, enabled=True)
+	DefaultConnectionGene(key=(15, 0), innovation=110, weight=0.3299048505922198, enabled=True)
+	DefaultConnectionGene(key=(16, 0), innovation=111, weight=-0.7675735652082961, enabled=True)
+	DefaultConnectionGene(key=(17, 0), innovation=112, weight=0.9373766319243799, enabled=True)
+	DefaultConnectionGene(key=(18, 0), innovation=113, weight=-0.4647470583031097, enabled=True)
+Saved winner genome -> /home/nwilliamsdev/ai-dev/nerd_learner/nerd-muzero/cppn_arc_winner.pkl
+SMOKE OK in 6s, winner saved: None

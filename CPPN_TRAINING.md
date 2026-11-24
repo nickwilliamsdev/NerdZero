@@ -555,6 +555,26 @@ Next: (a) official-test re-check with the new winner (in flight:
 and all 1000 train tasks; (c) re-selection on the full train pool once grid
 size is settled.
 
+### 2026-11-24: grid-30 upgrade verified, cost is affordable
+
+The grid_size 15→30 upgrade is the main next lever. Verified:
+- `smoke_grid30.py` (pop4/n_eval3, Adam): pipeline runs end-to-end at
+  grid_size=30, no crash/NaN, winner saved. The unlock is confirmed:
+  `grid15: official-test fit 9/120, train fit 541/1000` →
+  `grid30: official-test fit 120/120, train fit 1000/1000`. At grid 30 the
+  WHOLE official test set and the WHOLE train set become usable.
+- `diag_grid30_cost.py` (2 gens, pop4/n_eval4, Adam-100 eval, real d48 recipe):
+  ~50 s/gen at pop4/n_eval4 → extrapolated ~600 s/gen (0.2 h) at the full
+  pop16/n_eval12 recipe → ~5 h for 30 gens. (The grid-15 Adam run ran ~3200
+  s/gen / ~26 h, but under heavy vLLM serving contention on the shared GB10;
+  the grid-30 probe caught a quieter GPU, so the absolute numbers aren't
+  directly comparable. What matters: grid-30, despite 4× the token length,
+  is clearly affordable.)
+- Caveat for the full grid-30 run: selection should NOT use the 12-task
+  fixed eval (it saturated at 1.0 in the Adam run). Use the full train pool
+  for selection (n_eval on a larger/rotating task set) and judge on the
+  official 120-task test split.
+
 ## File map
 
 | File | What |
