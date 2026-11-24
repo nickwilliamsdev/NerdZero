@@ -460,6 +460,35 @@ generation, so the run can be interrupted at any time without losing results
 — read the .ckpt, score it with eval_set13_adam.py, and judge. (This
 checkpointing is now in train_cppn_arc.py for all future runs too.)
 
+### 2026-11-23: OFFICIAL test-set cross-eval — the line generalizes
+
+All prior yardsticks (set-13, set-17, ...) are held-out subsets of the ARC
+*train* split. `eval_official_test.py` is the first yardstick on the actual
+ARC *test* split. Facts: the official test set has 120 tasks; only **9** fit
+the 15×15 pipeline (111 have grids 16..30 — unusable at grid_size=15; the
+train split, by contrast, is 541/1000 at 15×15 and 1000/1000 at 30×30, so
+"full train" = all 1000 requires grid_size=30).
+
+300-step in-context, the 9 fitting official-test tasks:
+
+| genome | SGD (clip10 lr.1) | Adam lr .01 |
+|---|---|---|
+| old best pop16 e12 s0 | 0.7967 | **0.9917** |
+| gated96 pop4 e300 | 0.8198 | 0.9580 |
+| random | (in eval_official_test.txt) | |
+
+- The old best genome's Adam score on the official test (0.9917) is *slightly
+  above* its train-holdout score (0.9837 on set-13) — the ~0.98 is a
+  genuine generalization, not a train-split artifact. (8/9 tasks ≥ 0.926;
+  one task 28a6681f = 0.940 is the weakest.)
+- Under SGD the same gap to random holds but the level is ~0.80.
+- Consequence: the in-flight Adam meta-selection run is selecting on a
+  signal that transfers to the official split. The open question is unchanged
+  (does Adam meta-selection beat 0.9837/0.9917, given random hits ~0.90).
+- Next lever after the Adam run lands: grid_size 15 → 30, which unlocks the
+  remaining 111 official-test tasks and all 1000 train tasks (cost ~4× the
+  token length per episode; the phenotype is currently tuned for 15×15).
+
 ## File map
 
 | File | What |
@@ -475,6 +504,7 @@ checkpointing is now in train_cppn_arc.py for all future runs too.)
 | `diag_adam_ceiling.py` / `.txt` | in-context OPTIMIZER A/B (SGD clip10 lr0.1 vs Adam lr 0.01/0.001, 300 steps) on set-13 for current best + gated96 + random — the decisive test that the ~0.85 ceiling was optimizer-limited (2026-11-23). |
 | `diag_adam_budget.py` | Adam budget-vs-expressivity probe (10/20/50/100/300 steps, best vs random genome) to pick the eval budget for Adam meta-selection (2026-11-23; result: 100). |
 | `eval_set13_adam.py` | Adam-300-step cross-eval on the unseen set-13 (successor yardstick to eval_set13_300steps.py); scores the Adam-run winner vs old best vs random (2026-11-23). |
+| `eval_official_test.py` / `.txt` | cross-eval on the OFFICIAL ARC test split (the 9 of 120 tasks fitting 15×15), SGD vs Adam 300-step; old best 0.7967→0.9917 under Adam — first proof the line generalizes off the train split (2026-11-23). |
 | `launch_adam300_pop16_e12_s0.sh` | launch for the Adam meta-selection run (pop16/e12/lr0.1/30 gens, `--in-context-optimizer adam --adam-lr 0.01 --eval-sgd-steps 100`). |
 | `eval_gateblend.py` | fixed-eval + 10-split for the damped gate-blend winner vs delta baseline vs dn24, with gate values. |
 | `check_gate_blend.py` | numerical unit check that `gate_task_scale` blends to the two endpoints. |
