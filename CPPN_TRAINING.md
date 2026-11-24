@@ -475,13 +475,16 @@ train split, by contrast, is 541/1000 at 15×15 and 1000/1000 at 30×30, so
 |---|---|---|
 | old best pop16 e12 s0 | 0.7967 | **0.9917** |
 | gated96 pop4 e300 | 0.8198 | 0.9580 |
-| random | (in eval_official_test.txt) | |
+| random | 0.7487 | 0.9357 |
 
 - The old best genome's Adam score on the official test (0.9917) is *slightly
   above* its train-holdout score (0.9837 on set-13) — the ~0.98 is a
   genuine generalization, not a train-split artifact. (8/9 tasks ≥ 0.926;
-  one task 28a6681f = 0.940 is the weakest.)
-- Under SGD the same gap to random holds but the level is ~0.80.
+  the weakest is dd6b8c4b at 0.926.)
+- Under Adam the evolved-vs-random gap on the official split is +0.056
+  (0.9917 vs 0.9357); under SGD +0.048 (0.7967 vs 0.7487). Random's ceiling
+  is ~0.93 here (vs ~0.90 on set-13) — the init-quality contribution is
+  smaller but still positive.
 - Consequence: the in-flight Adam meta-selection run is selecting on a
   signal that transfers to the official split. The open question is unchanged
   (does Adam meta-selection beat 0.9837/0.9917, given random hits ~0.90).
