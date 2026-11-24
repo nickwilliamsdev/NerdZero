@@ -105,15 +105,20 @@ def main():
     pop = T.neat.Population(neat_cfg)
     random_g = list(pop.population.values())[0]
     genomes = [
-        ("old best pop16 e12 s0", "sweep_lr10_e12_pop16_s0.pkl", random_g),
-        ("gated96 pop4 e300", "cppn_arc_gated96_pop4_e300.pkl", random_g),
-        ("random", None, random_g),
+        # label, pkl, fallback, (optimizers to run)
+        ("adam-winner pop16 e12 s0", "cppn_arc_adam100_pop16_e12_s0.pkl",
+         random_g, [("adam", 1e-2)]),
+        ("old best pop16 e12 s0", "sweep_lr10_e12_pop16_s0.pkl",
+         random_g, [("sgd", 0.1), ("adam", 1e-2)]),
+        ("gated96 pop4 e300", "cppn_arc_gated96_pop4_e300.pkl",
+         random_g, [("sgd", 0.1), ("adam", 1e-2)]),
+        ("random", None, random_g, [("sgd", 0.1), ("adam", 1e-2)]),
     ]
     import time
     t0 = time.time()
-    for label, pkl, fallback in genomes:
+    for label, pkl, fallback, arms in genomes:
         genome = (pickle.load(open(pkl, "rb")) if pkl else fallback)
-        for opt, lr in [("sgd", 0.1), ("adam", 1e-2)]:
+        for opt, lr in arms:
             a = pure_eval(genome, cfg, eps, pc, neat_cfg, device, opt, lr)
             print(f"{label:22s} {opt:4s} mean={np.mean(a):.4f}  "
                   f"per-task={['%.3f' % x for x in a]}  "

@@ -511,7 +511,32 @@ scored under heavy shared-GPU contention, which adds run-to-run variance —
 the checkpoint's 1.0000/all-solved is the robust signal.) This is the first
 time anything in the line cleared 1.0 on set-13, and it confirms meta-selection
 *under* Adam beats the fixed old best's init, i.e. the evolved init still buys
-real quality once the optimizer is fixed. Final numbers await gen 30.
+real quality once the optimizer is fixed.
+
+### 2026-11-24: Adam run complete — selection saturated at 1.0
+
+The 30-gen run finished; `Saved winner genome -> cppn_arc_adam100_pop16_e12_s0.pkl`.
+**The winner is byte-identical (`cmp`) to the gen-26 checkpoint** — in-sample
+best hit 1.0000 at gen 26 and stayed 1.0000 through gen 30 (gens 27-30 means
+0.8894/0.8705/0.9380/0.9358), so best-seen was never beaten. The gen-26 early
+read (1.0000 on set-13, all 16 solved) therefore IS the final set-13 result;
+`eval_set13_adam.py` (winner vs old best vs random) was run to confirm cleanly.
+
+Two conclusions:
+1. **Meta-selection under Adam works** — it found a genome that solves all 16
+   unseen set-13 tasks (old best 0.9837, random ~0.90), and it did so in 26/30
+   gens.
+2. **In-sample selection saturated** — the 12-task fixed eval maxed at 1.0
+   (gen 26), after which fitness no longer discriminates. This validates the
+   methodological direction: selection on a saturated small set is worthless
+   signal; the next runs should select on a larger/different task pool (full
+   train set) and judge on the official test split.
+
+Next: (a) official-test re-check with the new winner (in flight:
+`eval_official_test.py` now scores adam-winner + old best + gated96 + random);
+(b) grid_size 15→30 upgrade to unlock the remaining 111 official-test tasks
+and all 1000 train tasks; (c) re-selection on the full train pool once grid
+size is settled.
 
 ## File map
 
