@@ -528,16 +528,23 @@ read (1.0000 on set-13, all 16 solved) therefore IS the final set-13 result;
 |---|---|---|
 | **adam-winner (gen-26)** | **1.0000** (16/16) | **1.0000** (9/9) |
 | old best pop16-e12-s0 | 0.9770 | 0.9927 |
-| random | 0.9150 | 0.9357 |
+| gated96 pop4 e300 | — | 0.9505 |
+| random | 0.9150 | 0.9684 |
 
 - The Adam-evolved genome solves **every** task on both unseen yardsticks:
   the 16-task train holdout AND all 9 official-test tasks that fit 15×15.
   Old best left 2 tasks at 0.940/0.972 (set-13) and 1 at 0.934 (official).
-- Evolved-vs-random gap: +0.085 on set-13, +0.064 on official — init quality
-  from meta-selection still buys a real chunk even with Adam doing the work.
-- (Old best reads 0.9770/0.9927 here vs 0.9837/0.9917 in the solo runs —
-  shared-GPU contention variance on the sub-perfect tasks; the winner's
-  perfect 1.0 on both is the robust signal.)
+- (Full same-run official table incl. SGD arms: old best 0.8035/0.9927,
+  gated96 0.8480/0.9505, random 0.7725/0.9684 — `eval_official_test.txt`,
+  4445 s wall. Note the earlier "gated96/random stopped" note was wrong:
+  my `kill` targeted the wrong pid and the run actually finished with all
+  arms. Run-to-run variance under GPU contention is visible: random reads
+  0.9684 here vs 0.9357 in the first pass, old best 0.9927 vs 0.9917.)
+- Evolved-vs-random gap: +0.085 on set-13, +0.032 on official (same-run
+  random 0.9684) — init quality from meta-selection still buys a real
+  chunk even with Adam doing the work, though random's ceiling here is
+  higher than the first pass suggested; the winner's perfect 1.0 on both
+  yardsticks is the robust signal.
 
 Two conclusions:
 1. **Meta-selection under Adam works** — it found a genome that solves all 16
@@ -574,6 +581,15 @@ The grid_size 15→30 upgrade is the main next lever. Verified:
   fixed eval (it saturated at 1.0 in the Adam run). Use the full train pool
   for selection (n_eval on a larger/rotating task set) and judge on the
   official 120-task test split.
+
+**In flight (launched 2026-11-24):** `launch_grid30_adam_pop16_e12_s0.sh`
+(pop16/e12, grid 30, Adam lr 0.01, 100-step eval, 30 gens, seed 0, NO
+fixed-eval → 12 fresh eval tasks per gen from the 1000-task train pool).
+Gen 0 confirmed healthy at launch: `Eligible ARC tasks: 1000`, gated d48
+phenotype at S=30, per-gen checkpoint to
+`cppn_arc_grid30_adam100_pop16_e12_s0.pkl.ckpt`. Expected ~5 h on a quiet
+GPU (up to ~26 h under vLLM contention). Final verdict when it lands:
+score the winner on ALL 120 official test tasks at grid 30.
 
 ## File map
 
