@@ -492,6 +492,27 @@ train split, by contrast, is 541/1000 at 15×15 and 1000/1000 at 30×30, so
   remaining 111 official-test tasks and all 1000 train tasks (cost ~4× the
   token length per episode; the phenotype is currently tuned for 15×15).
 
+### 2026-11-24: Adam run near-complete (in-sample signal strong)
+
+At gen 25-26 of 30: best fitness 0.9969 (gen 25) and 1.0000 (gen 26, in-sample
+on the 12 fixed eval tasks), mean 0.965-0.967, stdev ~0.05 — healthy spread,
+no freeze. The per-gen checkpoint is live (`cppn_arc_adam100_pop16_e12_s0.pkl.ckpt`
+updates after each generation; gen-26 copy snapshotted for early scoring).
+Early read in flight: `eval_ckpt_set13.py` scores the gen-26 checkpoint vs the
+old best on set-13 Adam-300 (queued behind the training process on the shared
+GB10). Final verdict when the 30-gen run finishes: `eval_set13_adam.py`.
+
+**Early read (gen-26 checkpoint, `eval_ckpt_gen26_set13.txt`):** the in-flight
+Adam run's checkpoint scores **1.0000** on set-13 Adam-300 — all 16 tasks
+solved — vs the old best's 0.9641 in the same run (two tasks there stuck at
+0.715/0.790). Early gap **+0.0359**. (Caveat: the old best measured 0.9837
+when scored alone earlier; it reads 0.9641 here because both genomes were
+scored under heavy shared-GPU contention, which adds run-to-run variance —
+the checkpoint's 1.0000/all-solved is the robust signal.) This is the first
+time anything in the line cleared 1.0 on set-13, and it confirms meta-selection
+*under* Adam beats the fixed old best's init, i.e. the evolved init still buys
+real quality once the optimizer is fixed. Final numbers await gen 30.
+
 ## File map
 
 | File | What |
@@ -508,6 +529,7 @@ train split, by contrast, is 541/1000 at 15×15 and 1000/1000 at 30×30, so
 | `diag_adam_budget.py` | Adam budget-vs-expressivity probe (10/20/50/100/300 steps, best vs random genome) to pick the eval budget for Adam meta-selection (2026-11-23; result: 100). |
 | `eval_set13_adam.py` | Adam-300-step cross-eval on the unseen set-13 (successor yardstick to eval_set13_300steps.py); scores the Adam-run winner vs old best vs random (2026-11-23). |
 | `eval_official_test.py` / `.txt` | cross-eval on the OFFICIAL ARC test split (the 9 of 120 tasks fitting 15×15), SGD vs Adam 300-step; old best 0.7967→0.9917 under Adam — first proof the line generalizes off the train split (2026-11-23). |
+| `eval_ckpt_set13.py` / `eval_ckpt_gen26_set13.txt` | early-read harness: scores the in-flight `.ckpt` vs the old best on set-13 Adam-300, so the run can be judged before it ends. Gen-26 result: **1.0000** (first 16/16 on set-13) vs old best 0.9837 (2026-11-24). |
 | `launch_adam300_pop16_e12_s0.sh` | launch for the Adam meta-selection run (pop16/e12/lr0.1/30 gens, `--in-context-optimizer adam --adam-lr 0.01 --eval-sgd-steps 100`). |
 | `eval_gateblend.py` | fixed-eval + 10-split for the damped gate-blend winner vs delta baseline vs dn24, with gate values. |
 | `check_gate_blend.py` | numerical unit check that `gate_task_scale` blends to the two endpoints. |

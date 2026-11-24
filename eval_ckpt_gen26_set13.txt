@@ -1,0 +1,9 @@
+/home/nwilliamsdev/ai-dev/nerd_learner/nerd-muzero/train_cppn_arc.py:583: UserWarning: enable_nested_tensor is True, but self.use_nested_tensor is False because encoder_layer.norm_first was True
+  self.encoder = nn.TransformerEncoder(layer, num_layers=L)
+set-13 Adam-300: ['99306f82', 'd13f3404', '9bebae7a', '14b8e18c', '28e73c20', 'f45f5ca7', '9f27f097', 'c8cbb738', '8e301a54', 'e633a9e5', 'e45ef808', 'cf5fd0ad', 'b942fd60', 'fcc82909', '27f8ce4f', '4e469f39']
+/home/nwilliamsdev/ai-dev/nerd_learner/nerd-muzero/train_cppn_arc.py:583: UserWarning: enable_nested_tensor is True, but self.use_nested_tensor is False because encoder_layer.norm_first was True
+  self.encoder = nn.TransformerEncoder(layer, num_layers=L)
+ckpt gen26 (adam run): mean=1.0000 per-task=['1.000', '1.000', '1.000', '1.000', '1.000', '1.000', '1.000', '1.000', '1.000', '1.000', '1.000', '1.000', '1.000', '1.000', '1.000', '1.000']
+old best pop16 e12 s0: mean=0.9641 per-task=['1.000', '1.000', '1.000', '0.790', '1.000', '1.000', '0.965', '1.000', '0.980', '1.000', '1.000', '0.715', '1.000', '1.000', '0.975', '1.000']
+
+early gap ckpt - old best: +0.0359
