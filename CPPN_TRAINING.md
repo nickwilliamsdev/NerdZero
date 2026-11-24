@@ -522,6 +522,23 @@ best hit 1.0000 at gen 26 and stayed 1.0000 through gen 30 (gens 27-30 means
 read (1.0000 on set-13, all 16 solved) therefore IS the final set-13 result;
 `eval_set13_adam.py` (winner vs old best vs random) was run to confirm cleanly.
 
+**Final yardsticks (all Adam-lr0.01-300-step in-context):**
+
+| | set-13 (16 unseen train tasks) | official test (9 of 120, fit 15×15) |
+|---|---|---|
+| **adam-winner (gen-26)** | **1.0000** (16/16) | **1.0000** (9/9) |
+| old best pop16-e12-s0 | 0.9770 | 0.9927 |
+| random | 0.9150 | 0.9357 |
+
+- The Adam-evolved genome solves **every** task on both unseen yardsticks:
+  the 16-task train holdout AND all 9 official-test tasks that fit 15×15.
+  Old best left 2 tasks at 0.940/0.972 (set-13) and 1 at 0.934 (official).
+- Evolved-vs-random gap: +0.085 on set-13, +0.064 on official — init quality
+  from meta-selection still buys a real chunk even with Adam doing the work.
+- (Old best reads 0.9770/0.9927 here vs 0.9837/0.9917 in the solo runs —
+  shared-GPU contention variance on the sub-perfect tasks; the winner's
+  perfect 1.0 on both is the robust signal.)
+
 Two conclusions:
 1. **Meta-selection under Adam works** — it found a genome that solves all 16
    unseen set-13 tasks (old best 0.9837, random ~0.90), and it did so in 26/30

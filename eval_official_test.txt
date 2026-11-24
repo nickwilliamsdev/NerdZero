@@ -1,0 +1,11 @@
+Official ARC test set: 9 of 120 tasks fit 15x15
+task ids: ['20270e3b', '28a6681f', '3dc255db', 'b6f77b65', 'd35bdbdc', 'dbff022c', 'dd6b8c4b', 'e8686506', 'faa9f03d']
+(the other 111 have grids 16..30 x 16..30; needs grid_size=30 to judge)
+
+/home/nwilliamsdev/ai-dev/nerd_learner/nerd-muzero/train_cppn_arc.py:583: UserWarning: enable_nested_tensor is True, but self.use_nested_tensor is False because encoder_layer.norm_first was True
+  self.encoder = nn.TransformerEncoder(layer, num_layers=L)
+/home/nwilliamsdev/ai-dev/nerd_learner/nerd-muzero/train_cppn_arc.py:583: UserWarning: enable_nested_tensor is True, but self.use_nested_tensor is False because encoder_layer.norm_first was True
+  self.encoder = nn.TransformerEncoder(layer, num_layers=L)
+adam-winner pop16 e12 s0 adam mean=1.0000  per-task=['1.000', '1.000', '1.000', '1.000', '1.000', '1.000', '1.000', '1.000', '1.000']  (753s elapsed)
+old best pop16 e12 s0  sgd  mean=0.8035  per-task=['0.783', '0.930', '0.830', '0.896', '0.800', '0.880', '0.785', '0.480', '0.847']  (1499s elapsed)
+old best pop16 e12 s0  adam mean=0.9927  per-task=['1.000', '1.000', '1.000', '1.000', '1.000', '1.000', '0.934', '1.000', '1.000']  (2248s elapsed)
