@@ -591,6 +591,16 @@ phenotype at S=30, per-gen checkpoint to
 GPU (up to ~26 h under vLLM contention). Final verdict when it lands:
 score the winner on ALL 120 official test tasks at grid 30.
 
+**Reality check (2026-11-25, gen 11/30):** actual gen time is ~7800 s
+(~2.2 h/gen, 30-gens avg 7794 s) — the quiet-GPU extrapolation of ~600 s/gen
+was an 11× underestimate (the GB10 is heavily contended by vLLM serving;
+even the grid-15 Adam run ran ~3200 s/gen). ETA for gens 12-30: ~36 h.
+In-sample best has climbed 0.96→0.986 (gens 10-11, rotating 12-task eval,
+NOT yet saturated — the rotation is working). Budget re-probe at grid 30
+(`diag_adam_budget_grid30.py`) and the all-120 harness
+(`eval_official_test.py --grid 30 --steps 100`) are being prepped in
+parallel.
+
 ## File map
 
 | File | What |
