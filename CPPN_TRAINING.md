@@ -629,6 +629,34 @@ budget):**
   official set at BOTH 100 steps (where the genome earns its keep) and 300
   steps (the Adam-alone ceiling).
 
+### 2026-11-25: deciding the next step (what the results imply)
+
+The two big-grid results together say: (1) random init + Adam-300 already
+solves grid-30 tasks (0.9988), so the genome's value at grid 30 is SAMPLE
+EFFICIENCY (solving in ~100 steps where random needs ~300), not final
+accuracy; (2) the all-120 harness smoke showed the ranking is preserved on
+official big-grid tasks (evolved 0.857 > old best 0.508 > random 0.455 at
+Adam-100) but the absolute ceiling is lower than on small grids.
+
+Decision tree for the next step:
+- A full all-120 x 3-genome baseline (100-step) would be the cleanest bar,
+  but it is ~12 h on the contended GPU and would starve the in-flight 38 h
+  training run. Cost model (diag_cost_grid30.py) confirmed CPU is NOT
+  viable (1 task x 300 steps on CPU is still running after 15+ min; ~125
+  s/task on GPU from the smoke). => full 120 baseline deferred to when the
+  grid-30 winner lands (judge it at 100 AND 300 steps, per above).
+- The cheaper, higher-leverage validation: the SELECTION NOISE FLOOR
+  (diag_selection_noise.py). The in-flight run selects on a rotating 12-task
+  set, ONE episode per task (random demo split per gen). If the fitness std
+  across independent episode draws (same genome) is comparable to the
+  between-genome fitness spread, NEAT is ranking on noise and the 38 h run
+  is building on a bad signal. If noise << spread, the protocol is sound
+  and the run can be left to finish. This is the one thing worth fixing
+  BEFORE more compute is spent.
+- If noise proves too high, the fix is: multiple episodes per eval task
+  (average), or a larger rotating set — cheap to add, changes only the
+  fitness function, not the meta-loss.
+
 ## File map
 
 | File | What |
