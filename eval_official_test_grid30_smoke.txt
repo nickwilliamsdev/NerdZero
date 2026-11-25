@@ -1,0 +1,16 @@
+Official ARC test set: 2 tasks scored (120 total; fit at grid 30)
+steps=100  arms=[('sgd', 0.1), ('adam', 0.01)]  limit=2
+task ids: ['0934a4d8', '135a2760']
+
+/home/nwilliamsdev/ai-dev/nerd_learner/nerd-muzero/train_cppn_arc.py:583: UserWarning: enable_nested_tensor is True, but self.use_nested_tensor is False because encoder_layer.norm_first was True
+  self.encoder = nn.TransformerEncoder(layer, num_layers=L)
+/home/nwilliamsdev/ai-dev/nerd_learner/nerd-muzero/train_cppn_arc.py:583: UserWarning: enable_nested_tensor is True, but self.use_nested_tensor is False because encoder_layer.norm_first was True
+  self.encoder = nn.TransformerEncoder(layer, num_layers=L)
+grid15 adam-winner     sgd  steps=100 mean=0.1688  (249s elapsed)
+grid15 adam-winner     adam steps=100 mean=0.8566  (497s elapsed)
+old best grid15        sgd  steps=100 mean=0.4104  (744s elapsed)
+old best grid15        adam steps=100 mean=0.5078  (996s elapsed)
+random                 sgd  steps=100 mean=0.3736  (1245s elapsed)
+random                 adam steps=100 mean=0.4547  (1492s elapsed)
+
+total wall: 1492s

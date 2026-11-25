@@ -1,0 +1,19 @@
+grid-30 eligible pool: 1000 tasks; using 16 (seed 13)
+task ids: ['bdad9b1f', '505fff84', '9caba7c3', '6cdd2623', 'a8610ef7', 'c074846d', '0e206a2e', '3ee1011a', '22208ba4', 'b91ae062', '67c52801', 'e7b06bea', '6f8cd79b', 'd6e50e54', 'e3f79277', 'ecb67b6d']
+/home/nwilliamsdev/ai-dev/nerd_learner/nerd-muzero/train_cppn_arc.py:583: UserWarning: enable_nested_tensor is True, but self.use_nested_tensor is False because encoder_layer.norm_first was True
+  self.encoder = nn.TransformerEncoder(layer, num_layers=L)
+scoring grid-15 adam-winner on grid-30 tasks (10/20/50/100/300-step Adam)...
+/home/nwilliamsdev/ai-dev/nerd_learner/nerd-muzero/train_cppn_arc.py:583: UserWarning: enable_nested_tensor is True, but self.use_nested_tensor is False because encoder_layer.norm_first was True
+  self.encoder = nn.TransformerEncoder(layer, num_layers=L)
+scoring fresh random genome...
+
+ steps |    best |  random |     gap
+----------------------------------
+    10 |  0.5461 |  0.5601 | -0.0140
+    20 |  0.5832 |  0.6383 | -0.0552
+    50 |  0.8778 |  0.7535 | +0.1243
+   100 |  0.9804 |  0.8553 | +0.1251
+   300 |  1.0000 |  0.9988 | +0.0012
+
+=> pick the budget where the best-vs-random gap saturates for the
+   grid-30 meta-selection run's eval_sgd_steps.

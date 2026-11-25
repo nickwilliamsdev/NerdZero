@@ -601,6 +601,34 @@ NOT yet saturated — the rotation is working). Budget re-probe at grid 30
 (`eval_official_test.py --grid 30 --steps 100`) are being prepped in
 parallel.
 
+**Grid-30 budget probe result (`diag_adam_budget_grid30.txt`, 16 grid-30
+train tasks, grid-15 winner vs random, single 300-step pass read at each
+budget):**
+
+| steps | best | random | gap |
+|---|---|---|---|
+| 10 | 0.5461 | 0.5601 | -0.0140 |
+| 20 | 0.5832 | 0.6383 | -0.0552 |
+| 50 | 0.8778 | 0.7535 | +0.1243 |
+| 100 | 0.9804 | 0.8553 | **+0.1251** |
+| 300 | 1.0000 | 0.9988 | **+0.0012** |
+
+- The in-flight run's 100-step selection budget is VALIDATED at grid 30
+  (gap saturates at 50-100; short budgets are uninformative, same shape as
+  grid 15). 50 steps would be ~equally informative at half the eval cost —
+  candidate for the next run.
+- **Big finding: random init + 300-step Adam reaches 0.9988 on grid-30
+  tasks.** On the big-grid distribution the in-context optimizer alone is
+  near-sufficient; the genome's value is budget-dependent: +0.125 at the
+  100-step budget, ~0 at 300. Contrast grid 15: random-300 was only 0.905
+  and the genome bought ~+0.08 there — init quality mattered because the
+  hard small-grid tasks resisted 300-step Adam too. So the CPPN line's
+  payoff at grid 30 is sample efficiency (solving in 50-100 steps), not
+  final accuracy at a 300-step budget.
+- Consequence for the final verdict: judge the grid-30 winner on the all-120
+  official set at BOTH 100 steps (where the genome earns its keep) and 300
+  steps (the Adam-alone ceiling).
+
 ## File map
 
 | File | What |
@@ -618,7 +646,9 @@ parallel.
 | `eval_set13_adam.py` | Adam-300-step cross-eval on the unseen set-13 (successor yardstick to eval_set13_300steps.py); scores the Adam-run winner vs old best vs random (2026-11-23). |
 | `eval_official_test.py` / `.txt` | cross-eval on the OFFICIAL ARC test split (the 9 of 120 tasks fitting 15×15), SGD vs Adam 300-step; old best 0.7967→0.9917 under Adam — first proof the line generalizes off the train split (2026-11-23). |
 | `eval_ckpt_set13.py` / `eval_ckpt_gen26_set13.txt` | early-read harness: scores the in-flight `.ckpt` vs the old best on set-13 Adam-300, so the run can be judged before it ends. Gen-26 result: **1.0000** (first 16/16 on set-13) vs old best 0.9837 (2026-11-24). |
-| `launch_adam300_pop16_e12_s0.sh` | launch for the Adam meta-selection run (pop16/e12/lr0.1/30 gens, `--in-context-optimizer adam --adam-lr 0.01 --eval-sgd-steps 100`). |
+| `launch_adam300_pop16_e12_s0.sh` | launch for the grid-15 Adam meta-selection run (pop16/e12/lr0.1/30 gens, `--in-context-optimizer adam --adam-lr 0.01 --eval-sgd-steps 100`). |
+| `launch_grid30_adam_pop16_e12_s0.sh` | grid-30 Adam meta-selection launch (pop16/e12, rotating 12-task eval from the full 1000-task pool — fixes the fixed-eval saturation). |
+| `diag_adam_budget_grid30.py` / `.txt` | grid-30 eval-budget probe (10/20/50/100/300 read off one 300-step pass, grid-15 winner vs random, 16 grid-30 tasks). Result: 100-step selection validated; random-300 hits 0.9988 (2026-11-25). |
 | `eval_gateblend.py` | fixed-eval + 10-split for the damped gate-blend winner vs delta baseline vs dn24, with gate values. |
 | `check_gate_blend.py` | numerical unit check that `gate_task_scale` blends to the two endpoints. |
 | `cppn_arc_*.pkl` | saved winner genomes (one per run). |
