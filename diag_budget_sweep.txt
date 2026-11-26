@@ -1,0 +1,12 @@
+Stuck tasks to probe: ['c8cbb738', '27f8ce4f', 'cf5fd0ad', 'd13f3404', '9f27f097']
+(base 300-step scores from the earlier run: c8cbb738=0.4444 27f8ce4f=0.4815 cf5fd0ad=0.5556 d13f3404=0.6111 9f27f097=0.6597)
+
+      task    300st    600st   1000st
+  c8cbb738  1.0000  1.0000  1.0000
+  27f8ce4f  0.6296  0.5926  0.6420
+  cf5fd0ad  0.2083  0.5556  0.5694
+  d13f3404  0.3333  0.6111  0.8056
+  9f27f097  0.8194  0.9167  0.9861
+
+mean across stuck tasks per budget: 1.0000  0.6214  0.4444  0.5833  0.9074
+=> EXPRESSIVITY-limited (flat with more steps)

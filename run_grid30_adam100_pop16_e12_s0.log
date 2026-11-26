@@ -1,0 +1,283 @@
+Using device: cuda
+/home/nwilliamsdev/ai-dev/nerd_learner/nerd-muzero/train_cppn_arc.py:583: UserWarning: enable_nested_tensor is True, but self.use_nested_tensor is False because encoder_layer.norm_first was True
+  self.encoder = nn.TransformerEncoder(layer, num_layers=L)
+Phenotype: gated  |  params: 69146  (channels=8, attn_dim=48, S=30, out=10)
+Substrate: dim=5  schema=layer (auto, 6 layer types)  mode=dynamic (task stats)  radius=0.25
+Eligible ARC tasks: 1000  |  pop=16  cppn_hidden=48  device=cuda
+
+ ****** Running generation 0 ****** 
+
+/home/nwilliamsdev/ai-dev/nerd_learner/nerd-muzero/train_cppn_arc.py:583: UserWarning: enable_nested_tensor is True, but self.use_nested_tensor is False because encoder_layer.norm_first was True
+  self.encoder = nn.TransformerEncoder(layer, num_layers=L)
+/home/nwilliamsdev/ai-dev/nerd_learner/nerd-muzero/train_cppn_arc.py:583: UserWarning: enable_nested_tensor is True, but self.use_nested_tensor is False because encoder_layer.norm_first was True
+  self.encoder = nn.TransformerEncoder(layer, num_layers=L)
+[gen 1] sgd_task=1c56ad9f eval=['6fa7a44f', 'ea786f4a', '7e576d6e', 'e5062a87', 'a8d7556c', '25c199f5', 'e41c6fd3', '1f876c06', '22425bda', 'baf41dbf', 'f8f52ecc', '1190bc91'] best=0.8371 mean=0.7076 (8443.0s)
+    tasks solved (acc>0.99): 0/16
+Population's average fitness: 0.70764 stdev: 0.09282
+Best fitness: 0.83713 - size: (49, 293) - species 1 - id 1
+Average adjusted fitness: 0.180
+Mean genetic distance 3.307, standard deviation 1.388
+Population of 16 members in 1 species (after reproduction):
+   ID   age  size   fitness   adj fit  stag
+  ====  ===  ====  =========  =======  ====
+     1    0    16      0.837    0.180     0
+Total extinctions: 0
+Generation time: 8442.982 sec
+
+ ****** Running generation 1 ****** 
+
+[gen 2] sgd_task=5ecac7f7 eval=['11852cab', 'ea9794b1', '9bebae7a', '7039b2d7', 'fe45cba4', '55059096', '05a7bcf2', 'd511f180', '5623160b', 'a09f6c25', '29700607', '6aa20dc0'] best=0.9368 mean=0.8503 (8518.6s)
+    tasks solved (acc>0.99): 0/16
+Population's average fitness: 0.85033 stdev: 0.07014
+Best fitness: 0.93680 - size: (50, 293) - species 1 - id 26
+Average adjusted fitness: 0.182
+Mean genetic distance 2.363, standard deviation 1.820
+Population of 16 members in 1 species (after reproduction):
+   ID   age  size   fitness   adj fit  stag
+  ====  ===  ====  =========  =======  ====
+     1    1    16      0.937    0.182     0
+Total extinctions: 0
+Generation time: 8518.667 sec (8480.824 average)
+
+ ****** Running generation 2 ****** 
+
+[gen 3] sgd_task=2dd70a9a eval=['673ef223', 'd364b489', '2de01db2', 'a3325580', '00d62c1b', '342ae2ed', 'b9630600', '47c1f68c', 'b6afb2da', '762cd429', '8886d717', 'd749d46f'] best=0.9214 mean=0.8085 (8380.4s)
+    tasks solved (acc>0.99): 0/16
+Population's average fitness: 0.80851 stdev: 0.09898
+Best fitness: 0.92138 - size: (50, 293) - species 1 - id 26
+Average adjusted fitness: 0.284
+Mean genetic distance 3.324, standard deviation 1.377
+Population of 16 members in 1 species (after reproduction):
+   ID   age  size   fitness   adj fit  stag
+  ====  ===  ====  =========  =======  ====
+     1    2    16      0.921    0.284     1
+Total extinctions: 0
+Generation time: 8380.408 sec (8447.352 average)
+
+ ****** Running generation 3 ****** 
+
+[gen 4] sgd_task=0becf7df eval=['d406998b', 'ad3b40cf', '6c434453', '14b8e18c', '017c7c7b', 'c97c0139', '69889d6e', '7bb29440', '93b581b8', '4522001f', '7039b2d7', '878187ab'] best=0.9324 mean=0.8172 (6298.3s)
+    tasks solved (acc>0.99): 0/16
+Population's average fitness: 0.81724 stdev: 0.09742
+Best fitness: 0.93238 - size: (50, 288) - species 1 - id 48
+Average adjusted fitness: 0.210
+Mean genetic distance 0.973, standard deviation 1.443
+Population of 16 members in 1 species (after reproduction):
+   ID   age  size   fitness   adj fit  stag
+  ====  ===  ====  =========  =======  ====
+     1    3    16      0.932    0.210     2
+Total extinctions: 0
+Generation time: 6298.300 sec (7910.089 average)
+
+ ****** Running generation 4 ****** 
+
+[gen 5] sgd_task=5bd6f4ac eval=['b0f4d537', '34cfa167', 'a2fd1cf0', '54dc2872', '256b0a75', '5587a8d0', 'b7cb93ac', '2753e76c', 'c62e2108', '770cc55f', '516b51b7', 'd753a70b'] best=0.9471 mean=0.8352 (7944.2s)
+    tasks solved (acc>0.99): 0/16
+Population's average fitness: 0.83520 stdev: 0.09575
+Best fitness: 0.94713 - size: (51, 285) - species 1 - id 59
+Average adjusted fitness: 0.186
+Mean genetic distance 0.256, standard deviation 0.066
+Population of 16 members in 1 species (after reproduction):
+   ID   age  size   fitness   adj fit  stag
+  ====  ===  ====  =========  =======  ====
+     1    4    16      0.947    0.186     0
+Total extinctions: 0
+Generation time: 7944.220 sec (7916.915 average)
+
+ ****** Running generation 5 ****** 
+
+[gen 6] sgd_task=99b1bc43 eval=['74dd1130', 'ad38a9d0', '3ad05f52', '1cf80156', '642d658d', 'd017b73f', 'a09f6c25', '6c434453', 'c64f1187', '60d73be6', 'bdad9b1f', 'b15fca0b'] best=0.9425 mean=0.7906 (7036.7s)
+    tasks solved (acc>0.99): 0/16
+Population's average fitness: 0.79058 stdev: 0.14486
+Best fitness: 0.94250 - size: (50, 288) - species 1 - id 48
+Average adjusted fitness: 0.409
+Mean genetic distance 0.264, standard deviation 0.071
+Population of 16 members in 1 species (after reproduction):
+   ID   age  size   fitness   adj fit  stag
+  ====  ===  ====  =========  =======  ====
+     1    5    16      0.942    0.409     1
+Total extinctions: 0
+Generation time: 7036.723 sec (7770.216 average)
+
+ ****** Running generation 6 ****** 
+
+[gen 7] sgd_task=c35c1b4c eval=['80214e03', '99b1bc43', 'ba97ae07', 'e760a62e', 'c658a4bd', '4938f0c2', '5a5a2103', 'a1570a43', 'e681b708', 'c9f8e694', 'b0f4d537', 'de1cd16c'] best=0.9485 mean=0.7655 (8205.1s)
+    tasks solved (acc>0.99): 0/16
+Population's average fitness: 0.76546 stdev: 0.13444
+Best fitness: 0.94851 - size: (51, 285) - species 1 - id 59
+Average adjusted fitness: 0.248
+Mean genetic distance 0.334, standard deviation 0.062
+Population of 16 members in 1 species (after reproduction):
+   ID   age  size   fitness   adj fit  stag
+  ====  ===  ====  =========  =======  ====
+     1    6    16      0.949    0.248     0
+Total extinctions: 0
+Generation time: 8205.156 sec (7832.351 average)
+
+ ****** Running generation 7 ****** 
+
+[gen 8] sgd_task=af902bf9 eval=['73182012', '2bee17df', '3a301edc', 'cf5fd0ad', '48634b99', '538b439f', 'e9614598', '50c07299', '1efba499', '5623160b', 'c6141b15', '1190bc91'] best=0.9142 mean=0.8450 (7294.0s)
+    tasks solved (acc>0.99): 0/16
+Population's average fitness: 0.84495 stdev: 0.04307
+Best fitness: 0.91418 - size: (51, 280) - species 1 - id 111
+Average adjusted fitness: 0.077
+Mean genetic distance 0.438, standard deviation 0.060
+Population of 16 members in 1 species (after reproduction):
+   ID   age  size   fitness   adj fit  stag
+  ====  ===  ====  =========  =======  ====
+     1    7    16      0.914    0.077     1
+Total extinctions: 0
+Generation time: 7294.025 sec (7765.060 average)
+
+ ****** Running generation 8 ****** 
+
+[gen 9] sgd_task=0a938d79 eval=['ea32f347', 'ff2825db', 'fcb5c309', 'cce03e0d', '281123b4', 'ff28f65a', '18447a8d', '54dc2872', '292dd178', '7f4411dc', '963f59bc', 'a57f2f04'] best=0.9597 mean=0.8722 (7100.8s)
+    tasks solved (acc>0.99): 0/16
+Population's average fitness: 0.87218 stdev: 0.06135
+Best fitness: 0.95973 - size: (50, 278) - species 1 - id 120
+Average adjusted fitness: 0.116
+Mean genetic distance 0.462, standard deviation 0.080
+Population of 16 members in 1 species (after reproduction):
+   ID   age  size   fitness   adj fit  stag
+  ====  ===  ====  =========  =======  ====
+     1    8    16      0.960    0.116     0
+Total extinctions: 0
+Generation time: 7100.797 sec (7691.253 average)
+
+ ****** Running generation 9 ****** 
+
+[gen 10] sgd_task=484b58aa eval=['d19f7514', '09629e4f', '97c75046', '444801d8', '5117e062', 'bbc9ae5d', '12997ef3', '712bf12e', '7b7f7511', 'c9f8e694', 'e619ca6e', '84db8fc4'] best=0.9670 mean=0.7612 (8836.8s)
+    tasks solved (acc>0.99): 0/16
+Population's average fitness: 0.76116 stdev: 0.12697
+Best fitness: 0.96697 - size: (51, 279) - species 1 - id 131
+Average adjusted fitness: 0.240
+Mean genetic distance 0.485, standard deviation 0.089
+Population of 16 members in 1 species (after reproduction):
+   ID   age  size   fitness   adj fit  stag
+  ====  ===  ====  =========  =======  ====
+     1    9    16      0.967    0.240     0
+Total extinctions: 0
+Generation time: 8836.807 sec (7805.808 average)
+
+ ****** Running generation 10 ****** 
+
+[gen 11] sgd_task=10fcaaa3 eval=['2204b7a8', '456873bc', 'e133d23d', '178fcbfb', '08ed6ac7', '1c02dbbe', '15660dd6', 'aee291af', 'a87f7484', '917bccba', '6d58a25d', '759f3fd3'] best=0.9860 mean=0.8550 (8322.7s)
+    tasks solved (acc>0.99): 0/16
+Population's average fitness: 0.85503 stdev: 0.13308
+Best fitness: 0.98599 - size: (51, 279) - species 1 - id 131
+Average adjusted fitness: 0.344
+Mean genetic distance 0.448, standard deviation 0.137
+Population of 16 members in 1 species (after reproduction):
+   ID   age  size   fitness   adj fit  stag
+  ====  ===  ====  =========  =======  ====
+     1   10    16      0.986    0.344     0
+Total extinctions: 0
+Generation time: 8322.745 sec (7793.785 average)
+
+ ****** Running generation 11 ****** 
+
+[gen 12] sgd_task=673ef223 eval=['27f8ce4f', '423a55dc', '69889d6e', 'd931c21c', '3bd67248', '2dee498d', 'c4d1a9ae', '0c9aba6e', 'fbf15a0b', 'b775ac94', '758abdf0', '6fa7a44f'] best=0.9758 mean=0.8041 (9466.6s)
+    tasks solved (acc>0.99): 0/16
+Population's average fitness: 0.80411 stdev: 0.14082
+Best fitness: 0.97581 - size: (51, 279) - species 1 - id 131
+Average adjusted fitness: 0.224
+Mean genetic distance 0.439, standard deviation 0.167
+Population of 16 members in 1 species (after reproduction):
+   ID   age  size   fitness   adj fit  stag
+  ====  ===  ====  =========  =======  ====
+     1   11    16      0.976    0.224     1
+Total extinctions: 0
+Generation time: 9466.638 sec (7888.582 average)
+
+ ****** Running generation 12 ****** 
+
+[gen 13] sgd_task=e734a0e8 eval=['505fff84', '673ef223', '7953d61e', 'e7639916', '7e02026e', '5587a8d0', '794b24be', '20fb2937', '11dc524f', '64a7c07e', 'b60334d2', '5614dbcf'] best=0.9931 mean=0.8031 (7487.8s)
+    tasks solved (acc>0.99): 1/16
+Population's average fitness: 0.80315 stdev: 0.16183
+Best fitness: 0.99306 - size: (52, 273) - species 1 - id 182
+Average adjusted fitness: 0.278
+Mean genetic distance 0.360, standard deviation 0.065
+Population of 16 members in 1 species (after reproduction):
+   ID   age  size   fitness   adj fit  stag
+  ====  ===  ====  =========  =======  ====
+     1   12    16      0.993    0.278     0
+Total extinctions: 0
+Generation time: 7487.803 sec (7799.321 average)
+
+ ****** Running generation 13 ****** 
+
+[gen 14] sgd_task=070dd51e eval=['6fa7a44f', '1d398264', '846bdb03', '4b6b68e5', '7d18a6fb', 'edcc2ff0', 'aab50785', '278e5215', 'e48d4e1a', 'afe3afe9', '98c475bf', 'e6de6e8f'] best=0.9871 mean=0.8347 (12536.6s)
+    tasks solved (acc>0.99): 0/16
+Population's average fitness: 0.83473 stdev: 0.15347
+Best fitness: 0.98710 - size: (52, 273) - species 1 - id 185
+Average adjusted fitness: 0.389
+Mean genetic distance 0.415, standard deviation 0.063
+Population of 16 members in 1 species (after reproduction):
+   ID   age  size   fitness   adj fit  stag
+  ====  ===  ====  =========  =======  ====
+     1   13    16      0.987    0.389     1
+Total extinctions: 0
+Generation time: 12536.688 sec (8423.160 average)
+
+ ****** Running generation 14 ****** 
+
+[gen 15] sgd_task=0a1d4ef5 eval=['2ccd9fef', '8b28cd80', '4612dd53', '34cfa167', '5af49b42', '23b5c85d', 'f18ec8cc', 'b1986d4b', 'a096bf4d', '8731374e', 'b745798f', '6150a2bd'] best=0.9748 mean=0.6678 (10672.2s)
+    tasks solved (acc>0.99): 0/16
+Population's average fitness: 0.66780 stdev: 0.21566
+Best fitness: 0.97476 - size: (52, 272) - species 1 - id 198
+Average adjusted fitness: 0.331
+Mean genetic distance 0.398, standard deviation 0.121
+Population of 16 members in 1 species (after reproduction):
+   ID   age  size   fitness   adj fit  stag
+  ====  ===  ====  =========  =======  ====
+     1   14    16      0.975    0.331     2
+Total extinctions: 0
+Generation time: 10672.216 sec (8695.960 average)
+
+ ****** Running generation 15 ****** 
+
+[gen 16] sgd_task=99b1bc43 eval=['363442ee', '332efdb3', '652646ff', 'fafffa47', '9b4c17c4', '1190e5a7', '5b526a93', 'a740d043', 'c3202e5a', '8be77c9e', 'ded97339', '319f2597'] best=0.9573 mean=0.6782 (8631.2s)
+    tasks solved (acc>0.99): 0/16
+Population's average fitness: 0.67823 stdev: 0.17461
+Best fitness: 0.95733 - size: (52, 272) - species 1 - id 198
+Average adjusted fitness: 0.232
+Mean genetic distance 0.422, standard deviation 0.117
+Population of 16 members in 1 species (after reproduction):
+   ID   age  size   fitness   adj fit  stag
+  ====  ===  ====  =========  =======  ====
+     1   15    16      0.957    0.232     3
+Total extinctions: 0
+Generation time: 8631.197 sec (8855.407 average)
+
+ ****** Running generation 16 ****** 
+
+[gen 17] sgd_task=2f767503 eval=['103eff5b', 'd749d46f', '15660dd6', 'e21d9049', 'beb8660c', '668eec9a', '228f6490', 'ac2e8ecf', '36d67576', '44d8ac46', 'e619ca6e', 'bda2d7a6'] best=0.9770 mean=0.8286 (8881.5s)
+    tasks solved (acc>0.99): 0/16
+Population's average fitness: 0.82864 stdev: 0.10095
+Best fitness: 0.97700 - size: (52, 272) - species 1 - id 198
+Average adjusted fitness: 0.180
+Mean genetic distance 0.443, standard deviation 0.142
+Population of 16 members in 1 species (after reproduction):
+   ID   age  size   fitness   adj fit  stag
+  ====  ===  ====  =========  =======  ====
+     1   16    16      0.977    0.180     4
+Total extinctions: 0
+Generation time: 8881.482 sec (8923.040 average)
+
+ ****** Running generation 17 ****** 
+
+[gen 18] sgd_task=44d8ac46 eval=['f3e14006', '32e9702f', 'aee291af', 'a59b95c0', '12eac192', '52fd389e', 'fd02da9e', 'e74e1818', '22425bda', '2b01abd0', '09c534e7', '6fa7a44f'] best=0.9746 mean=0.7907 (9180.9s)
+    tasks solved (acc>0.99): 0/16
+Population's average fitness: 0.79070 stdev: 0.19986
+Best fitness: 0.97464 - size: (52, 268) - species 1 - id 241
+Average adjusted fitness: 0.446
+Mean genetic distance 0.481, standard deviation 0.122
+Population of 16 members in 1 species (after reproduction):
+   ID   age  size   fitness   adj fit  stag
+  ====  ===  ====  =========  =======  ====
+     1   17    16      0.975    0.446     5
+Total extinctions: 0
+Generation time: 9180.937 sec (9111.731 average)
+
+ ****** Running generation 18 ****** 
+
