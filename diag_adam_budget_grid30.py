@@ -25,9 +25,12 @@ N_TASKS = 16
 SET_SEED = 13
 
 
-def adapt_curve(phen, ep, device, max_steps, adam_lr=0.01):
+def adapt_curve(phen, ep, device, max_steps, adam_lr=0.01, reads=None):
     """Adapt `phen` on one episode up to max_steps with Adam; return a dict
-    {budget: accuracy} read at each budget in BUDGETS <= max_steps."""
+    {budget: accuracy} read at each budget in `reads` (default BUDGETS) <=
+    max_steps."""
+    if reads is None:
+        reads = BUDGETS
     phen.train()
     opt = torch.optim.Adam(phen.parameters(), lr=adam_lr)
     epd = T._ep_on_device(ep, device)
@@ -39,7 +42,7 @@ def adapt_curve(phen, ep, device, max_steps, adam_lr=0.01):
         loss = F.cross_entropy(pred, target)
         loss.backward()
         opt.step()
-        if step in BUDGETS:
+        if step in reads:
             phen.eval()
             got[step] = T.episode_accuracy(phen, epd, device)
             phen.train()

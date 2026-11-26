@@ -689,6 +689,43 @@ them), single 300-step pass read at 10/20/50/100/300. ~75 min on the shared
 GPU. The decisive number is the random@300 and the g30-vs-random gap @300
 on OFFICIAL tasks, vs the train-pool's collapsed +0.001.
 
+**OFFICIAL big-grid budget probe result (`diag_official_budget_grid30.txt`,
+12 official tasks with grid>15 — the ones grid-15 could NOT run — read off
+one 300-step pass per task):**
+
+| steps | g15-win (transfer) | g30-gen13 (native) | random | g15-rand | g30-rand |
+|---|---|---|---|---|---|
+| 10 | 0.5679 | 0.5582 | 0.3910 | +0.1769 | +0.1673 |
+| 20 | 0.5891 | 0.5971 | 0.5781 | +0.0110 | +0.0190 |
+| 50 | 0.8249 | 0.8228 | 0.7128 | +0.1121 | +0.1100 |
+| 100 | 0.9742 | 0.9624 | 0.7727 | +0.2015 | +0.1898 |
+| 300 | 1.0000 | 1.0000 | **0.8607** | +0.1393 | +0.1393 |
+
+Three findings:
+1. **The genome is LOAD-BEARING on the true test distribution.** Random
+   init + Adam reaches only **0.8607 @300 on official big-grid tasks** vs
+   **0.9988 on the train pool** (the earlier "sample efficiency" reading).
+   The value that looked like pure speed on train persists as REAL
+   accuracy on the hard, unseen test tasks: +0.139 at 300, +0.20 at 100.
+   Answer to "nice-to-have vs load-bearing": **load-bearing.** The CPPN's
+   encoded init genuinely solves tasks that Adam-from-random cannot, even
+   with 300 steps.
+2. **Grid-30-native (gen-13) ≈ grid-15-transfer** at every budget (0.962
+   vs 0.974 @100; both 1.0 @300). So far retraining at grid 30 has NOT
+   clearly beaten "take the grid-15 winner and use it at 30" — but it's
+   only 13/30 gens and within the 0.026/draw noise floor. The final
+   grid-30 winner is the real test.
+3. random@20 (0.578) is a transient plateau, not a pattern (10 and 300
+   bracket it normally).
+
+**Current decisive number in flight:** the all-120 official baseline
+(`eval_all120_grid30.py`, grid-15 winner + random, 120 tasks, single
+300-step pass read @100 and @300, per-task streamed to
+`eval_all120_grid30.jsonl`). ~8 h on the shared GB10. This gives the
+genome's full-set performance on the true distribution, the per-task
+failure list (where random@300 < 0.90 = "hard"), and how many hard tasks
+the genome solves — the failure tasks are what the next iteration targets.
+
 ## File map
 
 | File | What |
@@ -710,7 +747,8 @@ on OFFICIAL tasks, vs the train-pool's collapsed +0.001.
 | `launch_grid30_adam_pop16_e12_s0.sh` | grid-30 Adam meta-selection launch (pop16/e12, rotating 12-task eval from the full 1000-task pool — fixes the fixed-eval saturation). |
 | `diag_adam_budget_grid30.py` / `.txt` | grid-30 eval-budget probe (10/20/50/100/300 read off one 300-step pass, grid-15 winner vs random, 16 grid-30 tasks). Result: 100-step selection validated; random-300 hits 0.9988 (2026-11-25). |
 | `diag_selection_noise.py` / `.txt` | selection-noise floor: same genome, 4 independent episode draws, 12 grid-30 tasks @100 steps. Result: std 0.0258 across draws, but within-gen ranking is noise-free (shared episodes) → in-flight protocol sound (2026-11-25). |
-| `diag_official_budget_grid30.py` | OFFICIAL big-grid budget probe: grid-15 winner (transferred) + grid-30 native gen-13 ckpt + random on 12 official tasks (grid>15, grid-15 couldn't run them), single 300-step pass read at 10/20/50/100/300. Decisive: does the genome's value persist on the TRUE test distribution @300 (real accuracy) or only @100 (sample efficiency)? (2026-11-25). |
+| `diag_official_budget_grid30.py` / `.txt` | OFFICIAL big-grid budget probe: grid-15 winner (transferred) + grid-30 native gen-13 ckpt + random on 12 official tasks (grid>15, grid-15 couldn't run them), single 300-step pass read at 10/20/50/100/300. Result: random@300 = 0.8607 on official (vs 0.9988 on train pool) → genome is LOAD-BEARING on the true test distribution; g30-native ≈ g15-transfer so far (2026-11-25). |
+| `eval_all120_grid30.py` / `.jsonl` | ALL-120 official baseline at grid 30: grid-15 winner + random, all 120 official tasks, single 300-step pass read @100 and @300, per-task streamed to JSONL. Gives full-set performance + per-task hard-task failure list. ~8 h on shared GB10 (2026-11-26). |
 | `eval_gateblend.py` | fixed-eval + 10-split for the damped gate-blend winner vs delta baseline vs dn24, with gate values. |
 | `check_gate_blend.py` | numerical unit check that `gate_task_scale` blends to the two endpoints. |
 | `cppn_arc_*.pkl` | saved winner genomes (one per run). |

@@ -1,0 +1,24 @@
+12 OFFICIAL big-grid tasks (grids >15; seed 7)
+task ids: ['5961cc34', '2c181942', '71e489b6', 'aa4ec2a5', '16de56c4', '1ae2feb7', 'e87109e9', '8b9c3697', '221dfab4', '67e490f4', '981571dc', '1818057f']
+(these are the tasks grid-15 could NOT run; all fit grid 30)
+/home/nwilliamsdev/ai-dev/nerd_learner/nerd-muzero/train_cppn_arc.py:583: UserWarning: enable_nested_tensor is True, but self.use_nested_tensor is False because encoder_layer.norm_first was True
+  self.encoder = nn.TransformerEncoder(layer, num_layers=L)
+grid-30 native checkpoint: ckpt_grid30_gen13.pkl
+scoring grid-15 winner (transferred) on official big-grid tasks...
+/home/nwilliamsdev/ai-dev/nerd_learner/nerd-muzero/train_cppn_arc.py:583: UserWarning: enable_nested_tensor is True, but self.use_nested_tensor is False because encoder_layer.norm_first was True
+  self.encoder = nn.TransformerEncoder(layer, num_layers=L)
+scoring grid-30 native gen-13 checkpoint...
+scoring fresh random genome...
+
+ steps |  g15-win | g30-gen13 |   random | g15-rand | g30-rand
+--------------------------------------------------------------
+    10 |   0.5679 |    0.5582 |   0.3910 |  +0.1769 |  +0.1673
+    20 |   0.5891 |    0.5971 |   0.5781 |  +0.0110 |  +0.0190
+    50 |   0.8249 |    0.8228 |   0.7128 |  +0.1121 |  +0.1100
+   100 |   0.9742 |    0.9624 |   0.7727 |  +0.2015 |  +0.1898
+   300 |   1.0000 |    1.0000 |   0.8607 |  +0.1393 |  +0.1393
+
+Read: if random@300 stays well below 1.0 on official tasks, the
+genome's value PERSISTS at full budget (real accuracy, not just
+sample efficiency). Compare the +g30-rand column at 300 vs the
+train-pool's collapsed +0.001.
