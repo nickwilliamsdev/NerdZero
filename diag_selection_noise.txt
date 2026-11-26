@@ -1,0 +1,14 @@
+12 grid-30 tasks (seed 42): ['1c56ad9f', '95a58926', '42f83767', '80214e03', '2546ccf6', '97c75046', '4c5c2cf0', '60c09cac', 'ce22a75a', '36fdfd69', 'e9bb6954', '1190e5a7']
+/home/nwilliamsdev/ai-dev/nerd_learner/nerd-muzero/train_cppn_arc.py:583: UserWarning: enable_nested_tensor is True, but self.use_nested_tensor is False because encoder_layer.norm_first was True
+  self.encoder = nn.TransformerEncoder(layer, num_layers=L)
+/home/nwilliamsdev/ai-dev/nerd_learner/nerd-muzero/train_cppn_arc.py:583: UserWarning: enable_nested_tensor is True, but self.use_nested_tensor is False because encoder_layer.norm_first was True
+  self.encoder = nn.TransformerEncoder(layer, num_layers=L)
+draw 1/4: 100-step mean over 12 tasks = 0.9557 (per-task min 0.729)
+draw 2/4: 100-step mean over 12 tasks = 0.9597 (per-task min 0.733)
+draw 3/4: 100-step mean over 12 tasks = 0.9105 (per-task min 0.167)
+draw 4/4: 100-step mean over 12 tasks = 0.9679 (per-task min 0.748)
+
+selection noise floor (same genome, different episode draws):
+  mean 0.9484  std 0.0258  range 0.9105..0.9679
+  compare against the between-genome fitness spread of the
+  in-flight run (mean ~0.80-0.87, stdev ~0.05 per gen log).
