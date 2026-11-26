@@ -657,6 +657,38 @@ Decision tree for the next step:
   (average), or a larger rotating set — cheap to add, changes only the
   fitness function, not the meta-loss.
 
+**Selection-noise result (`diag_selection_noise.txt`):** same grid-15
+winner, 4 independent episode draws, 12 grid-30 tasks @100 steps →
+**std 0.0258** (range 0.9105–0.9679), mean 0.9484. Interpretation:
+- Within a generation the selection signal is CLEAN — all 16 genomes are
+  scored on the SAME shared episodes, so the per-episode draw noise is
+  perfectly correlated and cancels in the comparisons that drive
+  reproduction. The 0.0258 std only applies ACROSS generations (rotating
+  sets), i.e. to the "best-seen" checkpoint tracker, not to selection.
+- Against the ~0.05 within-gen fitness spread, 0.0258 is tolerable. A
+  genuinely better genome still ranks better most of the time, and NEAT
+  speciation is structure-based, not fitness-based. **Verdict: the
+  in-flight grid-30 run's protocol is sound → let it finish; no
+  fitness-function change needed for the next run.** (2-episode averaging
+  could shrink the cross-gen std to ~0.018 but isn't worth a protocol
+  change now.)
+- Bonus: the grid-15 winner transfers to grid-30 train tasks at **0.948**
+  @100 steps — that's the bar the grid-30-native run must beat.
+
+**Next step in flight: the OFFICIAL big-grid budget probe**
+(`diag_official_budget_grid30.py`). The train-pool budget probe found the
+genome's value collapses to +0.001 @300 (random-300 -> 0.999 on TRAIN
+tasks = sample efficiency). But the all-120 smoke showed random at only
+0.45 @100 on OFFICIAL tasks — official is harder for a random init. If
+random still can't reach ~1.0 @300 on official (harder, unseen) tasks, the
+genome buys REAL accuracy on the true test distribution, not just speed —
+the difference between "nice-to-have" and "load-bearing." Scoring the
+grid-15 winner (transferred), the grid-30 native gen-13 checkpoint, and
+random on 12 official big-grid tasks (grid >15, grid-15 couldn't run
+them), single 300-step pass read at 10/20/50/100/300. ~75 min on the shared
+GPU. The decisive number is the random@300 and the g30-vs-random gap @300
+on OFFICIAL tasks, vs the train-pool's collapsed +0.001.
+
 ## File map
 
 | File | What |
@@ -677,6 +709,8 @@ Decision tree for the next step:
 | `launch_adam300_pop16_e12_s0.sh` | launch for the grid-15 Adam meta-selection run (pop16/e12/lr0.1/30 gens, `--in-context-optimizer adam --adam-lr 0.01 --eval-sgd-steps 100`). |
 | `launch_grid30_adam_pop16_e12_s0.sh` | grid-30 Adam meta-selection launch (pop16/e12, rotating 12-task eval from the full 1000-task pool — fixes the fixed-eval saturation). |
 | `diag_adam_budget_grid30.py` / `.txt` | grid-30 eval-budget probe (10/20/50/100/300 read off one 300-step pass, grid-15 winner vs random, 16 grid-30 tasks). Result: 100-step selection validated; random-300 hits 0.9988 (2026-11-25). |
+| `diag_selection_noise.py` / `.txt` | selection-noise floor: same genome, 4 independent episode draws, 12 grid-30 tasks @100 steps. Result: std 0.0258 across draws, but within-gen ranking is noise-free (shared episodes) → in-flight protocol sound (2026-11-25). |
+| `diag_official_budget_grid30.py` | OFFICIAL big-grid budget probe: grid-15 winner (transferred) + grid-30 native gen-13 ckpt + random on 12 official tasks (grid>15, grid-15 couldn't run them), single 300-step pass read at 10/20/50/100/300. Decisive: does the genome's value persist on the TRUE test distribution @300 (real accuracy) or only @100 (sample efficiency)? (2026-11-25). |
 | `eval_gateblend.py` | fixed-eval + 10-split for the damped gate-blend winner vs delta baseline vs dn24, with gate values. |
 | `check_gate_blend.py` | numerical unit check that `gate_task_scale` blends to the two endpoints. |
 | `cppn_arc_*.pkl` | saved winner genomes (one per run). |
